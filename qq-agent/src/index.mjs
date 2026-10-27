@@ -11,7 +11,7 @@ import { AgentRunner, buildPrompt, readCredential } from './agent.mjs';
 import { startControl } from './control.mjs';
 import { downloadImage } from './media.mjs';
 import {
-  downloadFile, copyLocalFile, humanSize, textPreview, safeDownloadName,
+  downloadFile, copyLocalFile, humanSize, textPreview,
 } from './files.mjs';
 import { resolveAnimatedSheet, trustedAnimatedHint, describeAnimatedHint, imageKindOf } from './animation.mjs';
 import { computeStatus } from './status.mjs';
