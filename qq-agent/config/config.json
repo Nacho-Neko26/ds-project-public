@@ -3,7 +3,7 @@
         "enabled": true
     },
     "napcat": {
-        "wsUrl": "ws://127.0.0.1:3001",
+        "wsUrl": "ws://127.0.0.1:3003",
         "token": "<ONEBOT_WS_TOKEN>"
     },
     "lists": {
@@ -64,6 +64,7 @@
                 0.8
             ]
         },
+        "wakeWindowMinutes": 5,
         "mute": {
             "enabled": true,
             "ms": 120000

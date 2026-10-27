@@ -7,7 +7,7 @@ import { OneBot } from './onebot.mjs';
 import { HistoryStore, speakerLabel } from './context.mjs';
 import { renderSegments, renderForwardMessages, stripAtLabels, isFavorCommand } from './render.mjs';
 import { asksForVoice, extractVoiceDirective } from './voice-intent.mjs';
-import { AgentRunner, buildPrompt, readCredential, rollGroupChance } from './agent.mjs';
+import { AgentRunner, buildPrompt, readCredential, pickGroupMessage } from './agent.mjs';
 import { startControl } from './control.mjs';
 import { downloadImage } from './media.mjs';
 import {
@@ -52,6 +52,9 @@ import { loadTable, filterByGate, matchHash, matchCommand, matchFuzzy, renderHin
 import {
   runOwnerCommand, isOwnerCommandName, bridgeMuted, limitOffActive, relationLocked, readOwnerState,
 } from './owner-cmds.mjs';
+import {
+  onPoked, markPokeReplied, canPokeOut, markPokedOut, renderPokeHint, pokeConfig, extractPokeDirective,
+} from './poke.mjs';
 import { sendSong, musicHint, musicConfig } from './music.mjs';
 import { maybePostDaily, qzoneConfig, qzoneState } from './qzone.mjs';
 import { resolveRecords, asrConfig } from './asr.mjs';
@@ -215,8 +218,7 @@ function getSession(key, kind, id, title) {
   return sessions.get(key);
 }
 
-/** 攒够消息就异步让它往记忆里添东西 */
-function maybeLearnMemory(session) {
+/** 攒够消息就异步让它往记忆里添东西 */function maybeLearnMemory(session) {
   const conf = memoryConfig(cfg);
   if (!conf.enabled || session.memoryUpdating) return;
   if (!session.key.startsWith('group:')) return;
@@ -1067,6 +1069,16 @@ async function sendText(session, text, quoteId, { quote = false, atUid = 0, long
     if (session.recentContext.length > 60) session.recentContext.shift();
   }
   return parts.length;
+}
+
+/* ---------- 戳一戳（2026-10-28） ---------- */
+
+/** 真要发一次戳。session 里的 kind/id 决定是私聊还是群里戳。 */
+async function sendPokeTo(session, uid) {
+  const target = Number(uid);
+  if (!target) throw new Error('戳一戳缺少目标');
+  if (session.kind === 'group') return ob.sendPokeGroup(session.id, target);
+  return ob.sendPokePrivate(target);
 }
 
 /* ---------- 转发媒体（号主指令） ---------- */
@@ -2959,12 +2971,16 @@ async function handleBatch(session, batch) {
           + '直接接着上下文说；要是那些话跟你没关系、也插不上嘴，就 <SKIP>，别点破这个 @。）'
         : '',
       forced ? '（刚才那条是 @你 或者喊了你的名字——这一轮必须回，哪怕只一句。别装死。）' : '',
+      // 戳一戳（2026-10-28）：这一轮是被戳进来的，用不用戳回去她自己定
+      session.pokeHint || '',
       // 2026-10-28：窗口里／掷骰进来的消息给她一句提示，让她知道自己是被允许插话、不是被打扰
       forced || session.kind !== 'group' ? '' : (session.pickReason === 'wake'
         ? '（这几条不是冲你来的，但你刚被叫过——接着刚才的话头往下聊就行，有话说就接一句，没话就 <SKIP>。）'
         : '（这几条不是冲你来的，是按概率挑中你的——真的对味就插一句，凑不上就 <SKIP>。）'),
     ].filter(Boolean).join('\n\n'),
   });
+  // 戳一戳的提示只对这一轮有效，用完就清，免得每轮都以为被戳了
+  if (session.pokeHint) session.pokeHint = '';
 
   // 成本打点（2026-10-27 用户要求「测量一下」）：把 prompt 按空行切成段，量出最肥的几块。
   // 一行日志，不刷屏；想关就在 config 的 context 里加 "budgetLog": false。
@@ -3111,7 +3127,12 @@ async function handleBatch(session, batch) {
   const afterVoice = vc ? vc.rest : textAfter;
   const md = parseMediaDirective(afterVoice.trim());
   const st = extractStickerDirective(afterVoice);
-  const bodyRaw = st ? st.rest : afterVoice;
+  // 戳一戳（2026-10-28）：__POKE__ 独占一行，先摘出来，行本身不发成文字
+  const pk = extractPokeDirective(
+    st ? st.rest : afterVoice,
+    [...batch, ...(session.recentContext || [])].map((m) => ({ uid: m.uid, name: m.name })),
+  );
+  const bodyRaw = pk ? pk.rest : (st ? st.rest : afterVoice);
   // 2026-10-27 用户定：以【溟月】身份说的对话内容走短文本规则；引用资料、检索到的长文本、
   // 对方点名要模仿的长文句式这类「不是她临场说的话」，在正文最前面单独一行写 __LONG__，
   // 桥就不再按 16 字/40~90 字去断它，整条当作长文发出去。
@@ -3153,7 +3174,7 @@ async function handleBatch(session, batch) {
       return;
     }
 
-    if (!parts.length && !st && !vc) {
+    if (!parts.length && !st && !vc && !pk) {
       if (!directive.did) { state.stats.skipped++; return; }
       // 只做了事、没说话（比如默默设了提醒）：算一次回复，冷却和限流也该生效
       state.stats.replied++;
@@ -3213,6 +3234,22 @@ async function handleBatch(session, batch) {
       }
     }
     void tagPendingMemes(session.key).catch(() => {});
+    // 戳一戳（2026-10-28）：模型想戳就戳，同会话一分钟最多一次
+    if (pk) {
+      try {
+        const targetUid = Number(pk.target) || Number(last.uid);
+        const gate = canPokeOut(cfg.dataDir, { chatKey: session.key, cfg });
+        if (gate.ok) {
+          await sendPokeTo(session, targetUid);
+          markPokedOut(cfg.dataDir, { chatKey: session.key });
+          note('info', `[${session.key}] 戳了 ${targetUid}`);
+        } else {
+          note('debug', `[${session.key}] 戳得太勤，这轮先不戳（还剩 ${Math.ceil(gate.leftMs / 1000)}s）`);
+        }
+      } catch (e) {
+        note('warn', `[${session.key}] 戳一戳失败：${e.message}`);
+      }
+    }
     if (vc) {
       // 一轮可以发多条（模型写了几行 __SEND_VOICE__ 就发几条，最多 5 条）
       const voiceList = vc.texts && vc.texts.length ? vc.texts : [vc.text];
@@ -3393,6 +3430,53 @@ function handleMuteCommand(session, text, uid) {
   return true;
 }
 
+/**
+ * 收到一次戳（2026-10-28 用户 m03600「按你的方案执行」）。
+ * 只有戳到自己才算；按关系档位掷骰决定理不理，理就把这一戳当成一句话塞进会话，
+ * 让她自己决定是戳回去还是说句什么。私聊一般不装死，群里档位低的就当没看见。
+ */
+async function handlePokeNotice(ev) {
+  if (!pokeConfig(cfg).enabled) return;
+  if (ev.notice_type !== 'notify' || ev.sub_type !== 'poke') return;
+  const selfId = Number(ev.self_id ?? state.self?.user_id ?? 0);
+  if (Number(ev.target_id) !== selfId) return;         // 戳的不是我，不管
+  const uid = Number(ev.user_id);
+  if (!uid || uid === selfId) return;
+
+  const gid = ev.group_id ? Number(ev.group_id) : 0;
+  const isPrivate = !gid;
+  if (isPrivate && !cfg.privateAllow.has(uid)) return;
+  if (!isPrivate && !cfg.groupAllow.get(gid)) { state.stats.ignored++; return; }
+
+  const key = isPrivate ? `private:${uid}` : `group:${gid}`;
+  const session = getSession(key, isPrivate ? 'private' : 'group', isPrivate ? uid : gid,
+    isPrivate ? `私聊 ${uid}` : `群 ${gid}`);
+  if (isMuted(session)) return;
+  if (bridgeMuted(cfg).paused || bridgeMuted(cfg).takeover) return;
+
+  const name = isPrivate ? (session.title || String(uid)).replace(/^私聊\s*/, '') : String(uid);
+  const info = favorOf(session, uid, name);
+  const isOwnerHere = (cfg.raw.persona?.ownerUids ?? []).includes(uid) || cfg.trusted.has(uid);
+  const stage = levelOf(info.qualified, isOwnerHere);
+
+  const verdict = onPoked(cfg.dataDir, { chatKey: key, uid, stage, cfg });
+  if (!verdict.react) {
+    state.stats.ignored++;
+    note('info', `[${key}] 被 ${name} 戳了一下，不理（${verdict.reason}）`);
+    return;
+  }
+
+  markPokeReplied(cfg.dataDir, { chatKey: key, uid });
+  session.pokeHint = renderPokeHint({ name, count: verdict.count, stage });
+  session.forceReplyUntil = Date.now() + 30_000;   // 这可是人家主动戳的，别被冷却吞掉
+  session.lastActivityAt = Date.now();
+  state.stats.received++;
+  note('info', `[${key}] ${name} 戳了你一下（第 ${stage} 档，今天第 ${verdict.count} 次）`);
+  enqueue(session, {
+    uid, name, text: '[戳了你一下]', time: Date.now(), messageId: null,
+  });
+}
+
 function enqueue(session, msg) {
   // 认人：每收到一条就记下「这个 QQ 号这次叫什么」（跨群攒别名，见 src/identity.mjs）
   try { recordIdentity(cfg.agentCwd, msg.uid, msg.name, { chat: session.key }); } catch { /* 记不上不影响聊天 */ }
@@ -3462,6 +3546,12 @@ function personaAliasHit(cfg, text) {
 
 ob.on('event', (ev) => {
   if (ev.post_type === 'meta_event') return;
+  // 戳一戳（2026-10-28）：NapCat 走 notice / notify / sub_type=poke，
+  // target_id 是被戳的人。只有戳到自己才处理，戳别人的不管。
+  if (ev.post_type === 'notice') {
+    void handlePokeNotice(ev).catch((e) => note('warn', `戳一戳事件处理失败：${e.message}`));
+    return;
+  }
   if (ev.post_type !== 'message') return;
   if (ev.user_id && ev.self_id && Number(ev.user_id) === Number(ev.self_id)) return;
 
@@ -3535,16 +3625,18 @@ ob.on('event', (ev) => {
     }
 
     // —— 谁的话才进模型（2026-10-28 用户定，改掉了原来的硬门禁）——
-    // ① 被 @ 或叫了「溟月」：进，而且这一轮必须回；
-    // ② 叫过之后 wakeWindowMinutes 分钟内（默认 5）：群里普通消息也照喂，让她接着聊；
-    // ③ 其余情况按 reply.groupChance 真掷骰，命中才进来。
+    // 判定逻辑抽到 agent.mjs 的 pickGroupMessage()，这里只负责执行：
+    //   ① 被 @ 或叫了「溟月」：进，而且这一轮必须回；
+    //   ② 叫过之后 wakeWindowMinutes 分钟内（默认 5）：群里普通消息也照喂，让她接着聊；
+    //   ③ 其余情况按 reply.groupChance 真掷骰，命中才进来。
     //   以前这个概率只写进 prompt 当摆设，桥侧在下面直接 return 了，所以「不@就不回」。
     const calledNow = mentioned || personaNameHit;
-    const wakeMs = Math.max(0, Number(cfg.raw.reply.wakeWindowMinutes ?? 5)) * 60_000;
-    if (calledNow && wakeMs > 0) session.wakeUntil = Date.now() + wakeMs;
-    const inWake = Date.now() < (session.wakeUntil || 0);
-    // 这一轮为什么进模型：''=被叫（必须回）／'wake'=叫过之后的窗口里／'roll'=掷骰中了
-    let pickReason = '';
+    const pick = pickGroupMessage({
+      cfg, chatKey: key, mode, calledNow, wakeUntil: session.wakeUntil || 0,
+    });
+    session.wakeUntil = pick.wakeUntil;
+    // accept=false 就是静默；reason 说明这一轮为什么进模型：called／wake／roll
+    const pickReason = pick.reason === 'called' ? '' : pick.reason;
 
     // 「旁边几条」：不管这回回不回，别人的话都先攒着——等哪次被叫到，这些就是上下文。
     const keepRecent = () => {
@@ -3555,22 +3647,16 @@ ob.on('event', (ev) => {
       if (session.recentContext.length > 60) session.recentContext.shift();
     };
 
-    // mention 模式的群照旧：只有被叫才算，不开窗口、不掷骰。
-    if (mode === 'mention' && !calledNow) { state.stats.ignored++; keepRecent(); return; }
-
-    if (!calledNow && !inWake) {
-      const roll = rollGroupChance(cfg, key, false);
-      if (!roll.hit) {
-        state.stats.ignored++;
-        keepRecent();
-        note('debug', `[group:${gid}] 没被叫、掷骰没中（${roll.pct}%），静默：${String(text).slice(0, 20)}`);
-        return;
-      }
-      pickReason = 'roll';
-      note('info', `[group:${gid}] 没被叫、掷骰中了（${roll.pct}%），接着聊`);
-    } else if (!calledNow) {
-      pickReason = 'wake';
+    if (!pick.accept) {
+      state.stats.ignored++;
+      keepRecent();
+      note('debug', `[group:${gid}] 没被叫、掷骰没中（${pick.pct}%），静默：${String(text).slice(0, 20)}`);
+      return;
+    }
+    if (pick.reason === 'wake') {
       note('debug', `[group:${gid}] 被叫过、还在 ${Math.ceil((session.wakeUntil - Date.now()) / 60_000)} 分钟窗口里，照喂`);
+    } else if (pick.reason === 'roll') {
+      note('info', `[group:${gid}] 没被叫、掷骰中了（${pick.pct}%），接着聊`);
     }
     session.pickReason = pickReason;
 

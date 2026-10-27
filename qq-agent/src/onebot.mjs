@@ -157,6 +157,18 @@ export class OneBot extends EventEmitter {
     });
   }
 
+  /* ---- 戳一戳（2026-10-28） ---- */
+
+  /** 私聊戳：user_id = 被戳的人 */
+  sendPokePrivate(userId) {
+    return this.call('send_poke', { user_id: Number(userId) });
+  }
+
+  /** 群聊戳：group_id + user_id（被戳的人在哪个群） */
+  sendPokeGroup(groupId, userId) {
+    return this.call('send_poke', { group_id: Number(groupId), user_id: Number(userId) });
+  }
+
   /* ---- 点歌 / QQ 空间 ---- */
 
   /** QQ 空间说说：返回 { tid } */

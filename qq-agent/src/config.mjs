@@ -32,6 +32,20 @@ const DEFAULTS = {
     // #群聊 静音 加进来的群号：这些群一句话都不回（主人发 #群聊 解除 穿透）
     muteGroups: [],
   },
+  // 戳一戳（2026-10-28 用户 m03600「按你的方案执行」）
+  // 收到的戳走 notice 事件；发出的戳由模型输出一行 __POKE__ 触发。
+  poke: {
+    enabled: true,
+    // 同一个人多久之内只理一次（毫秒），免得他戳一下就陪着玩半天
+    replyCooldownMs: 600000,
+    // 一分钟内连着戳几次就当成「戳坏了」，这一波不再理
+    annoyWithinMs: 60000,
+    annoyCount: 3,
+    // 主动戳：同一个会话每分钟最多一次
+    outCooldownMs: 60000,
+    // 第 1~8 档「被戳了理不理」的概率；第 6 档往上基本都会理
+    replyChanceByStage: [0, 0, 0.1, 0.25, 0.5, 0.7, 0.95, 1, 1],
+  },
   context: {
     // 历史只放「刚才在说什么」：时间窗 + 条数 + 字数三道闸
     maxMessages: 14, maxChars: 2800, maxAgeMinutes: 40, maxPromptChars: 9000,

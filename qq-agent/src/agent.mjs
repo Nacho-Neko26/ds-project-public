@@ -200,13 +200,13 @@ export class AgentRunner {
    * 「中转」这份用于自己切回中转（或者 guard 切回来）后明确写死。
    */
   #writeModelPatches() {
-    const write = (file, provider, model) => {
+    const write = (file, provider, model, effort = 'high') => {
       const yaml = [
         '- id: agent-default-model',
         '  config:',
         `    provider: ${provider}`,
         `    model: ${model}`,
-        '    reasoningEffort: high',
+        `    reasoningEffort: ${effort}`,
         '',
       ].join('\n');
       try {
@@ -217,7 +217,7 @@ export class AgentRunner {
         log('warn', `写模型 patch 失败：${file}`, e.message);
       }
     };
-    write(this.modelPatches.relay, 'relay21r', 'deepseek-v4.1-flash');
+    write(this.modelPatches.relay, 'relay21r', 'deepseek-v4.1-flash', 'medium');
     write(this.modelPatches.official, 'deepseek-official', 'deepseek-flash');
   }
 
@@ -425,6 +425,35 @@ export function rollGroupChance(cfg, chatKey, boost = false, rnd = Math.random) 
   const [lo, hi] = groupChancePair(cfg, chatKey, boost);
   const p = hi > lo ? lo + rnd() * (hi - lo) : lo;
   return { hit: rnd() < p, pct: Math.round(p * 100) };
+}
+
+/**
+ * 群聊里「这一条要不要喂给模型」的判定（纯函数，方便单测）。
+ *
+ * 2026-10-28 用户定：「加一个『被 @ 之后 N 分钟内的消息也跟着喂』设置为 5 分钟」，
+ * 并指出「根本没有概率回话这回事，就是不 @ 就不会回复」——原来桥侧在这之前就 return 了。
+ *
+ * 规则：
+ *   ① 被 @ / 叫了「溟月」→ 进，且刷新 wakeUntil，这一轮必须回；
+ *   ② 刷新过之后 wakeWindowMinutes 分钟内 → 进，但不强制回（让她接着聊）；
+ *   ③ 其余 → 按 reply.groupChance 真掷骰，命中才进；
+ *   ④ mention 模式的群不掷骰、不开窗口，只认被叫。
+ *
+ * @returns {{accept:boolean, reason:''|'called'|'wake'|'roll', pct:number, wakeUntil:number}}
+ *          reason：'' = 不进（静默）／'called' 被叫／'wake' 窗口内／'roll' 掷骰中了
+ */
+export function pickGroupMessage({
+  cfg, chatKey, mode = 'full', calledNow = false, wakeUntil = 0, now = Date.now(), rnd = Math.random,
+}) {
+  const wakeMs = Math.max(0, Number(cfg?.raw?.reply?.wakeWindowMinutes ?? 5)) * 60_000;
+  const nextWake = calledNow && wakeMs > 0 ? now + wakeMs : Number(wakeUntil) || 0;
+
+  if (calledNow) return { accept: true, reason: 'called', pct: 0, wakeUntil: nextWake };
+  if (mode === 'mention') return { accept: false, reason: '', pct: 0, wakeUntil: nextWake };
+  if (now < nextWake) return { accept: true, reason: 'wake', pct: 0, wakeUntil: nextWake };
+
+  const roll = rollGroupChance(cfg, chatKey, false, rnd);
+  return { accept: roll.hit, reason: roll.hit ? 'roll' : '', pct: roll.pct, wakeUntil: nextWake };
 }
 
 /** 组装送给模型的一轮输入 */

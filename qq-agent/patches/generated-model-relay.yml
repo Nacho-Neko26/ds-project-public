@@ -1,0 +1,5 @@
+- id: agent-default-model
+  config:
+    provider: relay21r
+    model: deepseek-v4.1-flash
+    reasoningEffort: medium
