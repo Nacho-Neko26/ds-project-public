@@ -10,6 +10,9 @@ import { asksForVoice, extractVoiceDirective } from './voice-intent.mjs';
 import { AgentRunner, buildPrompt, readCredential } from './agent.mjs';
 import { startControl } from './control.mjs';
 import { downloadImage } from './media.mjs';
+import {
+  downloadFile, copyLocalFile, humanSize, textPreview, safeDownloadName,
+} from './files.mjs';
 import { resolveAnimatedSheet, trustedAnimatedHint, describeAnimatedHint, imageKindOf } from './animation.mjs';
 import { computeStatus } from './status.mjs';
 import {
@@ -780,13 +783,16 @@ async function resolveForwards(text) {
   return out;
 }
 
-/** 图片和语音一起处理：图片走描述缓存/read_image，语音走 SenseVoice 转写 */
-async function resolveIncoming(text, images, records, trusted, meta = {}) {
+/** 图片和语音和文件一起处理：图片走描述缓存/read_image，语音走 SenseVoice 转写 */
+async function resolveIncoming(text, images, records, trusted, meta = {}, files = []) {
   let out = await resolveImages(text, images, trusted, { ...meta, trusted }).catch(() => text);
   if (records.length) {
     out = await resolveRecords(out, records, {
       ob, cfg, dir: incomingDir, note,
     }).catch(() => out);
+  }
+  if (files.length) {
+    out = await resolveFiles(out, files, trusted, meta).catch(() => out);
   }
   // 合并转发：占位符换成真实内容（群里那条 content 是空的，得按 id 捞）
   out = await resolveForwards(out).catch(() => out);
@@ -795,6 +801,137 @@ async function resolveIncoming(text, images, records, trusted, meta = {}) {
     const q = await resolveQuote(meta.replyId).catch(() => '');
     if (q) out = `${q}\n${out}`;
   }
+  return out;
+}
+
+/* ---------- 文件 ---------- */
+// 别人发来的文件落到 incoming/ 下的这个子目录，和图片分开放，找的时候好找
+const filesDir = path.join(incomingDir, 'files');
+const TEMP_SCAN_MS = 12000;
+
+/**
+ * NapCat 收在线文件（QQ 私聊里点「发送文件」走的 onlinefile 段）后，会把文件下到
+ * 容器内的 /app/.config/QQ/NapCat/temp/，宿主机上是另一个前缀。这里按名字去捞最新的那个。
+ */
+function findNewestInTempDir(name, sinceMs) {
+  const dirs = QQ_PATH_MAP.map(([inside, outside]) => outside + '/NapCat/temp').concat([
+    path.join(cfg.agentCwd, '..', 'napcat', 'data', 'qq', 'NapCat', 'temp'),
+  ]);
+  const want = String(name || '').toLowerCase();
+  let best = null;
+  for (const dir of dirs) {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const n of names) {
+      if (want && !n.toLowerCase().includes(want)) continue;
+      const full = path.join(dir, n);
+      try {
+        const st = fs.statSync(full);
+        if (!st.isFile() || st.size <= 0) continue;
+        if (sinceMs && st.mtimeMs < sinceMs - 5000) continue;
+        if (!best || st.mtimeMs > best.mtimeMs) best = { file: full, size: st.size, mtimeMs: st.mtimeMs };
+      } catch { /* 单个文件读不到不影响别的 */ }
+    }
+    if (best) return best;
+  }
+  return best;
+}
+
+/**
+ * 在线文件（C2C）：调 receive_online_file 让 NapCat 去下载，然后等 temp 目录里出现它。
+ * 只有私聊能用这个接口——群里的在线文件走的是群文件柜，不需要收。
+ */
+async function receiveOnlineFile(meta, spec) {
+  if (meta.isGroup) return null;
+  const uid = Number(meta.uid) || 0;
+  if (!uid || !spec.msgId || !spec.elementId) return null;
+  const since = Date.now();
+  try {
+    await ob.call('receive_online_file', {
+      user_id: String(uid), msg_id: String(spec.msgId), element_id: String(spec.elementId),
+    }, 20000);
+  } catch (e) {
+    note('debug', `[文件] receive_online_file 失败：${e.message}`);
+  }
+  const deadline = Date.now() + TEMP_SCAN_MS;
+  while (Date.now() < deadline) {
+    const hit = findNewestInTempDir(spec.name, since);
+    if (hit) return hit;
+    await sleep(700);
+  }
+  return null;
+}
+
+/**
+ * 兜底：段里只有 file_id 时，让 NapCat 去下（get_file），再按挂载关系换成宿主路径。
+ * 实测 get_file 的 file 参数给文件名会 retcode 1200 超时，给 file_id 才靠谱。
+ */
+async function fetchFileViaGetFile(spec) {
+  const id = String(spec.fileId || '');
+  if (!id) return null;
+  try {
+    const info = await ob.call('get_file', { file_id: id }, 30000);
+    const host = toHostQQPath(info?.file || info?.url || '');
+    if (host && fs.existsSync(host)) return { file: host, size: fs.statSync(host).size };
+  } catch (e) {
+    note('debug', `[文件] get_file 失败：${e.message}`);
+  }
+  return findNewestInTempDir(spec.name, Date.now() - 60000);
+}
+
+/** 把一个 file 段变成「本地已有这个文件」；哪条路都走不通就返回 null。 */
+async function materializeFile(spec, meta) {
+  // 1) 段里直接带 url（NapCat 的 PacketApi 通了就给），最省事
+  if (spec.url) {
+    const got = await downloadFile(spec.url, filesDir, spec.name);
+    if (got) return got;
+  }
+  // 2) 在线文件：让 NapCat 自己下
+  if (spec.msgId && spec.elementId) {
+    const hit = await receiveOnlineFile(meta, spec);
+    if (hit) {
+      const got = copyLocalFile(hit.file, filesDir, spec.name || path.basename(hit.file));
+      if (got) return got;
+    }
+  }
+  // 3) 有 file_id：走 get_file
+  const viaId = await fetchFileViaGetFile(spec);
+  if (viaId) {
+    const got = copyLocalFile(viaId.file, filesDir, spec.name || path.basename(viaId.file));
+    if (got) return got;
+  }
+  return null;
+}
+
+/**
+ * 把 [[FILE:n]] 换成「文件名 + 存到哪 + 小文本预览」。
+ * 文本文件直接给内容：群里甩一篇 md，模型这一轮就能接得上，不用再多花一次工具调用。
+ */
+async function resolveFiles(text, files, trusted, meta = {}) {
+  if (!Array.isArray(files) || !files.length) return text;
+  let out = String(text ?? '');
+  await Promise.all(files.map(async (spec, i) => {
+    const label = spec.name ? `《${spec.name}》` : '一个文件';
+    const sizeText = spec.size ? `，${humanSize(spec.size)}` : '';
+    const got = await materializeFile(spec, meta).catch(() => null);
+    if (!got) {
+      out = out.replace(`[[FILE:${i}]]`, `[对方发来${label}${sizeText}，但这边没接住（下载失败或格式不支持）]`);
+      note('warn', `[${meta.chatKey || '?'}] 文件没收下来：${spec.name || '(无名)'} url=${spec.url ? 'y' : 'n'} id=${spec.fileId ? 'y' : 'n'}`);
+      return;
+    }
+    const rel = path.relative(cfg.agentCwd, got.file).replace(/\\/g, '/');
+    note('info', `[${meta.chatKey || '?'}] 收到文件 ${spec.name || path.basename(got.file)} → ${rel}（${humanSize(got.size)}）`);
+    const preview = textPreview(got.file);
+    if (preview) {
+      out = out.replace(`[[FILE:${i}]]`,
+        `[对方发来${label}${sizeText}，已存到 ${rel}，内容是：\n${preview}]`);
+      return;
+    }
+    out = out.replace(`[[FILE:${i}]]`,
+      trusted
+        ? `[对方发来${label}${sizeText}，已存到 ${rel}；要看内容就用工具读它，再据此回应]`
+        : `[对方发来${label}${sizeText}，已存到 ${rel}（不是文本，没法直接看内容）]`);
+  }));
   return out;
 }
 
@@ -1422,17 +1559,69 @@ async function refreshAboutTexts(now = Date.now()) {
   }
 }
 
-/* ---------- 晚安（每天 23:30，@ 好感>70 的人） ---------- */
+/* ---------- 晚安（每天 23:30，叫第六档以上的人） ---------- */
 
 const GOODNIGHT_MIN = 23 * 60 + 30;
+
+// 2026-10-27 用户改：不 @ 了，直接把称呼写进句子里；名单只给第六档（1080）以上；
+// 每次说的话要换着来，不能天天一句「晚安，早点睡」。
+// {n} 会被换成她平时怎么叫这个人。
+const NIGHT_LINES = [
+  '{n}，晚安，早点睡。',
+  '{n} 睡吧，明天还得早起呢。',
+  '晚安啦{n}，别熬夜了。',
+  '{n}，我先眯了，你也早点躺。',
+  '晚安{n}，做个好梦。',
+  '{n} 该睡了，手机放下。',
+  '{n}，晚安，明天见。',
+  '睡啦睡啦，{n}也快点睡。',
+  '{n} 晚安，被子盖好。',
+  '晚安{n}，别又刷到两点。',
+  '{n}，今天够了，睡吧。',
+  '晚安，{n}，明天再说。',
+  '{n} 早点睡，熬夜掉头发的。',
+  '晚安{n}，梦里别找我干活。',
+  '{n}，晚安，我在呢。',
+  '好了{n}，睡吧，晚安。',
+  '{n} 晚安，明天有事喊我。',
+  '晚安{n}，别想太多，睡就是了。',
+  '{n}，灯关了吧，晚安。',
+  '晚安啦，{n}，明早见。',
+  '{n} 该熄灯了，晚安。',
+  '喏，晚安{n}，别撑了。',
+];
+const NAP_LINES = [
+  '{n}，午安，睡一会儿吧。',
+  '午安{n}，眯一觉。',
+  '{n} 去睡吧，午安。',
+  '午安，{n}，别硬撑。',
+  '{n}，午安，睡醒了再说。',
+  '午安{n}，手机放下睡。',
+  '{n}，去躺一会儿，午安。',
+  '午安啦{n}，睡饱了才有力气。',
+];
+
+/** 从池子里挑一句还没用过的（一批人里尽量不重样） */
+function pickGreet(pool, used) {
+  const avail = pool.filter((s) => !used.has(s));
+  const arr = avail.length ? avail : pool;
+  const s = arr[Math.floor(Math.random() * arr.length)];
+  used.add(s);
+  return s;
+}
+
+/** 主人按第八档算（权限上永远给满） */
+function isOwnerUid(uid) {
+  return (cfg.raw.persona?.ownerUids ?? []).includes(Number(uid));
+}
 
 /**
  * 晚安 / 午安。
  *
- * 默认 23:30 统一 @ 好感>70 的人。
- * 但有人说过自己几点睡，就按他的点单独 @ 他：
+ * 默认 23:30 统一叫第六档以上（好感 1080 起）的人，不 @，把称呼写进句子里。
+ * 但有人说过自己几点睡，就按他的点单独叫：
  *   - 说「下午两点前睡」这种 → 那个点发**午安**，23:30 的晚安里照样保留他
- *   - 说「我十一点睡」→ 22:5x 左右单独跟他说晚安，23:30 那次就不再 @ 他
+ *   - 说「我十一点睡」→ 22:5x 左右单独跟他说晚安，23:30 那次就不再叫他
  *
  * 只在对应时间窗口里才读文件，平时一次 IO 都不做。
  */
@@ -1459,10 +1648,10 @@ async function runGoodnight(now = new Date()) {
     const profiles = loadProfiles(cfg.agentCwd, chatKey);
     const people = Object.values(profiles.people);
 
-    // 1) 主窗口 23:30：@ 所有好感>70、且没说「我更早睡」的人
+    // 1) 主窗口 23:30：叫第六档以上、且没说「我更早睡」的人
     if (isMainWindow && !mainSent) {
       const ids = people
-        .filter((p) => ensureFavor(p) > FAVOR.friend)
+        .filter((p) => levelOf(qualifiedFavor(p), isOwnerUid(p.uid)) >= 6)
         .filter((p) => {
           const s = p.sleepAt;
           if (!s) return true;
@@ -1472,14 +1661,20 @@ async function runGoodnight(now = new Date()) {
         })
         .sort((a, b) => ensureFavor(b) - ensureFavor(a));
       if (ids.length) {
-        const segs = ids.map((p) => ({ type: 'at', data: { qq: String(p.uid) } }));
-        segs.push({ type: 'text', data: { text: ' 晚安，早点睡。' } });
-        try {
-          await ob.sendGroup(gid, segs);
-          note('info', `[group:${gid}] 晚安已发，@ 了 ${ids.length} 人`);
-        } catch (e) {
-          note('warn', `[group:${gid}] 晚安发送失败：${e.message}`);
+        const used = new Set();
+        let ok = 0;
+        for (const p of ids) {
+          const nm = callName(p);
+          const text = pickGreet(NIGHT_LINES, used).replace(/\{n\}/g, nm);
+          try {
+            await ob.sendGroup(gid, [{ type: 'text', data: { text } }]);
+            ok++;
+          } catch (e) {
+            note('warn', `[group:${gid}] 晚安发送失败（${nm}）：${e.message}`);
+          }
+          if (ids.length > 1) await sleep(700);
         }
+        note('info', `[group:${gid}] 晚安已发，叫了 ${ok} 个人`);
       }
     }
 
@@ -1487,17 +1682,16 @@ async function runGoodnight(now = new Date()) {
     for (const p of people) {
       const s = p.sleepAt;
       if (!s) continue;
+      if (levelOf(qualifiedFavor(p), isOwnerUid(p.uid)) < 6) continue;   // 第六档以下不单独道安
       const key = `${p.uid}@${s.hour}:${s.minute}`;
       if (perSent[key]) continue;
       if (s.hour !== bj.hour || Math.abs(s.minute - bj.minute) >= 10) continue;
-      const isNap = s.hour < 14;    // 下午两点前睡 → 午安
+      const isNap = s.hour >= 11 && s.hour < 16;    // 中午那段小睡才算「午安」，凌晨一点睡也得说晚安
       const word = isNap ? '午安' : '晚安';
-      const text = isNap ? ' 午安，睡吧。' : ' 晚安，睡吧。';
+      const nm = callName(p);
+      const text = pickGreet(isNap ? NAP_LINES : NIGHT_LINES, new Set()).replace(/\{n\}/g, nm);
       try {
-        await ob.sendGroup(gid, [
-          { type: 'at', data: { qq: String(p.uid) } },
-          { type: 'text', data: { text } },
-        ]);
+        await ob.sendGroup(gid, [{ type: 'text', data: { text } }]);
         perSent[key] = true;
         touched = true;
         note('info', `[group:${gid}] ${word}已单独发给 ${p.displayName}（${s.hour}:${String(s.minute).padStart(2, '0')}）`);
@@ -3274,7 +3468,7 @@ ob.on('event', (ev) => {
   if (!cfg.raw.gate.enabled) { state.stats.ignored++; return; }
 
   const selfId = Number(ev.self_id ?? state.self?.user_id ?? 0);
-  const { text, ats, images, records, replyId } = renderSegments(ev.message, {
+  const { text, ats, images, records, files, replyId } = renderSegments(ev.message, {
     selfId,
     ownerUids: cfg.raw.persona?.ownerUids ?? [],
   });
@@ -3304,7 +3498,7 @@ ob.on('event', (ev) => {
         chatKey: session.key, uid, name: senderName(ev), isGroup: session.kind === 'group',
         atMe: false, wantsSave: wantsSaveText(text),
         replyId,
-      });
+      }, files);
       enqueue(session, {
         uid, name: senderName(ev), text: resolved, time: ev.time ? ev.time * 1000 : Date.now(), messageId: rawId,
       });
@@ -3364,7 +3558,7 @@ ob.on('event', (ev) => {
     // 2026-10-23 用户定：只 @ 不说话 → 带上前面几条让他自己判断；
     // 前面也没什么可接的，就当没看见，别单独回一句「你艾特我干嘛」。
     const bareText = stripAtLabels(text);
-    const bareAt = mentioned && bareText === '' && images.length === 0 && records.length === 0;
+    const bareAt = mentioned && bareText === '' && images.length === 0 && records.length === 0 && files.length === 0;
     if (bareAt) {
       const nowMs = Date.now();
       const ctx = (session.recentContext || []).filter((c) => nowMs - Number(c.time || 0) < 30 * 60_000);
@@ -3390,7 +3584,7 @@ ob.on('event', (ev) => {
 
     // —— 只 @ 了别人、什么也没说：跟它没关系，别当回事 ——
     // （以前 at 段不进正文，这种消息看起来是「空消息」，模型反而会回一句没头没脑的话）
-    if (!mentioned && bareText === '' && images.length === 0 && records.length === 0) {
+    if (!mentioned && bareText === '' && images.length === 0 && records.length === 0 && files.length === 0) {
       state.stats.ignored++;
       note('debug', `[group:${gid}] 只是 @ 了别人、没有内容，忽略`);
       return;
@@ -3439,7 +3633,7 @@ ob.on('event', (ev) => {
         chatKey: session.key, uid, name: senderName(ev), isGroup: session.kind === 'group',
         atMe: mentioned, wantsSave: wantsSaveText(text),
         replyId,
-      });
+      }, files);
       // 「旁边几条」存的是渲染阶段的原文，图还没换成描述，带着 [[IMG:0]] 这种占位符。
       // 原样带回下一批，模型就只看得到一个空占位符——群里冒出「一片白框」就是这么来的。
       const rc = session.recentContext?.find((c) => c.messageId === rawId);

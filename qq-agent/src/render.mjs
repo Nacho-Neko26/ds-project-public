@@ -32,6 +32,7 @@ function forwardItemLine(item) {
     else if (t === 'image' || t === 'mface') line += '[图]';
     else if (t === 'face') line += '[表情]';
     else if (t === 'record') line += '[语音]';
+    else if (t === 'file' || t === 'onlinefile') line += '[文件]';
     else if (t === 'video') line += '[视频]';
     else if (t === 'json' || t === 'xml') line += '[卡片]';
     else if (t === 'forward') line += '[又一段转发]';
@@ -87,6 +88,7 @@ export function renderSegments(message, { selfId = 0, ownerUids = [] } = {}) {
   const ats = [];
   const images = [];
   const records = [];
+  const files = [];
   // 引用回复：QQ 只在段里给一个被引用消息的 id，正文得另外捞（见 index.mjs 的 resolveQuote）
   let replyId = 0;
   for (const s of segs) {
@@ -116,7 +118,31 @@ export function renderSegments(message, { selfId = 0, ownerUids = [] } = {}) {
         records.push({ file: d.file || '', url: d.url || '', duration: d.duration || 0 });
         break;
       case 'video': text += '[对方发了段视频，你没细看]'; break;
-      case 'file': text += `[文件:${d.name ?? ''}]`; break;
+      // 文件：NapCat 的 file 段给 `file`（文件名）/`file_id`/`file_size`/`url`，
+      // 早期写法读的是 `d.name`，字段名对不上，群里收到的文件一律显示成「[文件:]」。
+      // 这里只留占位符，真正的下载和落盘交给 index.mjs 的 resolveFiles（异步）。
+      case 'file':
+        text += `[[FILE:${files.length}]]`;
+        files.push({
+          name: d.file || d.name || '',
+          url: d.url || '',
+          fileId: d.file_id || '',
+          size: Number(d.file_size ?? d.size ?? 0) || 0,
+        });
+        break;
+      // 在线文件（QQ 的「发送文件」走内核 onlinefile 段，NapCat 单独给了 type）
+      case 'onlinefile':
+        text += `[[FILE:${files.length}]]`;
+        files.push({
+          name: d.fileName || d.name || '',
+          url: d.url || '',
+          fileId: d.file_id || '',
+          size: Number(d.fileSize ?? d.file_size ?? 0) || 0,
+          msgId: d.msgId || '',
+          elementId: d.elementId || '',
+          isDir: !!d.isDir,
+        });
+        break;
       case 'json':
       case 'xml': text += '[卡片消息]'; break;
       case 'forward': text += renderForward(d); break;
@@ -124,13 +150,13 @@ export function renderSegments(message, { selfId = 0, ownerUids = [] } = {}) {
       default: break;
     }
   }
-  return { text: text.replace(/[ \t]+$/g, '').trim(), ats, images, records, replyId };
+  return { text: text.replace(/[ \t]+$/g, '').trim(), ats, images, records, files, replyId };
 }
 
 /** 去掉 @ 标签后的纯正文：判断「空的 @」和「只 @ 了别人」用 */
 export function stripAtLabels(text) {
   return String(text)
-    .replace(/\[\[(?:IMG|MFACE|REC):\d+\]\]/g, '')
+    .replace(/\[\[(?:IMG|MFACE|REC|FILE):\d+\]\]/g, '')
     .replace(/@(?:你|号主|群友|全体成员)\s*/g, '')
     .trim();
 }
