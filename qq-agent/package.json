@@ -1,0 +1,14 @@
+{
+  "name": "qq-agent-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "把 DeepSeek Harness 接到 QQ 上的桥：NapCat(OneBot 11) <-> dsh headless",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "doctor": "node src/doctor.mjs"
+  }
+}

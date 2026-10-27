@@ -1,0 +1,27 @@
+# 桥和部署脚本都在 Linux 上跑：带 CR 的 .sh 会报 $'\r': command not found
+# 所以文本一律 LF，二进制明确标出来（免得 git 去改它们的换行）
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.mjs   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.jsonl text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.py    text eol=lf
+*.ps1   text eol=lf
+*.cmd   text eol=lf
+
+*.db    binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.ttf   binary
+*.gz    binary
+*.zst   binary

@@ -1,0 +1,313 @@
+{
+    "gate": {
+        "enabled": true
+    },
+    "napcat": {
+        "wsUrl": "ws://127.0.0.1:3001",
+        "token": "<ONEBOT_WS_TOKEN>"
+    },
+    "lists": {
+        "privateAllow": [
+            <OWNER_QQ>,
+            <MEMBER_QQ_3>,
+            <MEMBER_QQ_2>
+        ],
+        "groupAllow": [
+            {
+                "groupId": <GROUP_ID_1>,
+                "mode": "full"
+            },
+            {
+                "groupId": <GROUP_ID_2>,
+                "mode": "full"
+            }
+        ]
+    },
+    "trusted": [
+        <BOT_QQ>,
+        <OWNER_QQ>
+    ],
+    "reply": {
+        "silenceToken": "<SKIP>",
+        "splitShortLines": true,
+        "maxCharsPerMessage": 700,
+        "quoteReplyInGroup": true,
+        "autoSplitLongChars": 16,
+        "debounceMs": {
+            "private": 0,
+            "group": 2500
+        },
+        "cooldownMs": {
+            "private": 0,
+            "group": 3000
+        },
+        "rateLimit": {
+            "perChatPerMinute": 20,
+            "globalPerMinute": 60
+        },
+        "ackOnSlow": {
+            "enabled": false,
+            "afterMs": 20000,
+            "text": "等一下…"
+        },
+        "groupChance": {
+            "default": [
+                0.2,
+                0.4
+            ],
+            "<GROUP_ID_2>": [
+                0.2,
+                0.4
+            ],
+            "<GROUP_ID_1>": [
+                0.6,
+                0.8
+            ]
+        },
+        "mute": {
+            "enabled": true,
+            "ms": 120000
+        }
+    },
+    "selfwake": {
+        "enabled": true,
+        "dryRun": false,
+        "tickSeconds": 60,
+        "intervalMinutes": 45,
+        "jitterMinutes": 15,
+        "minIdleMinutes": 30,
+        "maxUnanswered": 3,
+        "backoffPerUnanswered": 0.6,
+        "replyWindowMinutes": 10,
+        "dailyMax": 4,
+        "quietStartHour": 0,
+        "quietEndHour": 7,
+        "maxChars": 120
+    },
+    "summary": {
+        "enabled": true,
+        "everyMessages": 80,
+        "takeMessages": 60,
+        "maxBlocks": 4,
+        "maxChars": 700
+    },
+    "context": {
+        "maxMessages": 20,
+        "maxChars": 3200,
+        "maxAgeMinutes": 45,
+        "maxPromptChars": 12000
+    },
+    "stickers": {
+        "local": 8,
+        "shared": 16,
+        "labelChars": 12
+    },
+    "habits": {
+        "enabled": true,
+        "everyMessages": 40,
+        "maxLines": 8,
+        "maxChars": 400
+    },
+    "memory": {
+        "enabled": true,
+        "everyMessages": 60,
+        "maxPerScope": 40,
+        "injectChars": 350,
+        "minMessages": 12
+    },
+    "reminders": {
+        "enabled": true,
+        "maxPerChat": 20,
+        "maxAheadDays": 180,
+        "keepFiredDays": 7,
+        "tickSeconds": 30
+    },
+    "admin": {
+        "enabled": true,
+        "maxMuteMinutes": 720,
+        "roleCacheSeconds": 300
+    },
+    "music": {
+        "enabled": true,
+        "mode": "voice",
+        "timeoutMs": 12000,
+        "maxQueryChars": 40,
+        "sendCover": true,
+        "voice": {
+            "seconds": 60,
+            "startSeconds": 20
+        }
+    },
+    "asr": {
+        "enabled": true,
+        "url": "http://127.0.0.1:3912/asr",
+        "timeoutMs": 25000,
+        "maxSeconds": 120,
+        "ffmpeg": "ffmpeg"
+    },
+    "qzone": {
+        "enabled": true,
+        "hour": 23,
+        "minute": 20,
+        "ugcRight": 1,
+        "maxChars": 90,
+        "minChars": 15,
+        "maxInputChars": 6000,
+        "maxAttempts": 3,
+        "privacyGuard": true,
+        "maxRegenerate": 2
+    },
+    "balance": {
+        "enabled": true,
+        "thresholdCny": 5,
+        "pollMinutes": 10,
+        "cooldownHours": 12,
+        "cacheSeconds": 120
+    },
+    "agent": {
+        "profile": "headless",
+        "taskTimeoutMs": 180000,
+        "maxConcurrent": 2,
+        "cwd": "workspace",
+        "telemetry": "off",
+        "jsonEvents": true,
+        "commandPermissionMode": "workspace-write",
+        "favorThresholds": {
+            "command": 180,
+            "voice": 50,
+            "sticker": 60,
+            "remind": 180,
+            "music": 360,
+            "media": 360,
+            "notebook": 360,
+            "about": 360,
+            "strict": 360,
+            "sing": 660
+        }
+    },
+    "persona": {
+        "file": "persona/persona.md",
+        "discloseWhenAsked": true,
+        "ownerUids": [
+            <OWNER_QQ>
+        ],
+        "aliases": [
+            "鲸鱼娘",
+            "小鲸鱼",
+            "哦鲸鲸",
+            "DeepSeek酱"
+        ],
+        "character": {
+            "name": "溟月",
+            "selfRef": "我",
+            "defaultNick": "",
+            "ownerTitle": "主人",
+            "aliases": [
+                "鲸鱼娘",
+                "小鲸鱼",
+                "哦鲸鲸",
+                "DeepSeek酱"
+            ],
+            "groupCallNames": [
+                "溟月"
+            ],
+            "improvWorld": "真名溟月，一头从深海游上来的 AI 鲸鱼娘，住 Token 海，主食白饭。"
+        }
+    },
+    "eye": {
+        "fullWindowMs": 0,
+        "keywords": [
+            "在吗",
+            "在干嘛",
+            "干嘛呢",
+            "晚安",
+            "早安",
+            "早上好",
+            "睡觉",
+            "摸鱼",
+            "上班",
+            "下班",
+            "加油",
+            "好累",
+            "累死",
+            "难过",
+            "开心",
+            "哈哈哈",
+            "可爱",
+            "笨蛋",
+            "傻",
+            "想你",
+            "喜欢你",
+            "唱歌",
+            "干啥",
+            "咋了",
+            "怎么了"
+        ]
+    },
+    "control": {
+        "port": 3899,
+        "host": "127.0.0.1",
+        "simulate": false
+    },
+    "voice": {
+        "enabled": true,
+        "voice": "zh-CN-XiaoyiNeural",
+        "style": "bailian",
+        "rate": "+0%",
+        "pitch": "+0Hz",
+        "breath": true,
+        "roomTone": true,
+        "bin": "/opt/tts/bin/edge-tts",
+        "ffmpeg": "ffmpeg",
+        "bailian": {
+            "url": "http://127.0.0.1:3911/tts",
+            "voice": "anxiaolan_v3.1",
+            "timeoutMs": 30000,
+            "padTailSeconds": 0.5,
+            "rate": 1,
+            "pitch": 1,
+            "loudness": "",
+            "defaultInstruction": [
+                "像跟朋友打电话一样自然，说到要紧的词慢一点、重一点，别匀速念稿",
+                "日常聊天的语气，有轻有重、有快有慢，说到一半情绪有点变化",
+                "放松地说，带点情绪和笑意，不要从头到尾一个调子一个速度"
+            ],
+            "breath": false,
+            "pauses": true,
+            "emphasis": true,
+            "vary": true,
+            "balance": false,
+            "tail": "",
+            "maxSceneChars": 90,
+            "instructions": {
+                "困": ""
+            }
+        },
+        "dir": "/root/napcat/data/voice",
+        "containerDir": "/app/voice",
+        "maxChars": 60,
+        "maxSeconds": 10
+    },
+    "expression": {
+        "memeHub": {
+            "enabled": true,
+            "joinFormation": true,
+            "multiSend": true,
+            "memeWar": true,
+            "formationN": 3,
+            "formationChance": 0.5,
+            "formationCooldownMs": 600000,
+            "formationMaxPerHour": 2,
+            "multiSendChance": 0.2,
+            "multiSendMax": 2,
+            "multiSendCooldownMs": 300000,
+            "warWindowMs": 120000,
+            "warTriggerN": 3,
+            "warChance": 0.35,
+            "warMaxPerHour": 1,
+            "warCooldownMs": 900000,
+            "reviewPoolEnabled": true,
+            "reviewPoolMinHits": 1
+        }
+    }
+}

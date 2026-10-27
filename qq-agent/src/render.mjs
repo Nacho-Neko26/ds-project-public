@@ -1,0 +1,146 @@
+/**
+ * OneBot 消息段 → 模型能读的文本。
+ *
+ * 单独一个文件是为了能写单测：index.mjs 顶部就会连 NapCat 和起服务，
+ * import 它等于启动整个机器人。
+ */
+
+/**
+ * @ 段的人称标签。
+ * 之前的坑：at 段只进 ats 数组、不进正文，模型看到的是「顾鹤 你今天吃饭没」，
+ * 压根不知道有人在 @ 号主，群里又是默认接话，就当成在跟自己说了。
+ */
+export function atLabel(qq, selfId, ownerUids) {
+  if (qq === 'all') return '@全体成员';
+  if (selfId && String(selfId) === qq) return '@你';
+  if (ownerUids.includes(Number(qq))) return '@号主';
+  return '@群友';
+}
+
+/** 合并转发里的单条消息 → 一行「谁：说了什么」（纯文本，不递归） */
+function forwardItemLine(item) {
+  const who = item?.sender?.card || item?.sender?.nickname || String(item?.user_id || '某人');
+  const inner = Array.isArray(item?.message)
+    ? item.message
+    : [{ type: 'text', data: { text: String(item?.raw_message ?? '') } }];
+  let line = '';
+  for (const s of inner) {
+    const t = s?.type;
+    const d = s?.data ?? {};
+    if (t === 'text') line += d.text ?? '';
+    else if (t === 'at') line += `@${d.qq} `;
+    else if (t === 'image' || t === 'mface') line += '[图]';
+    else if (t === 'face') line += '[表情]';
+    else if (t === 'record') line += '[语音]';
+    else if (t === 'video') line += '[视频]';
+    else if (t === 'json' || t === 'xml') line += '[卡片]';
+    else if (t === 'forward') line += '[又一段转发]';
+  }
+  line = line.replace(/\s+/g, ' ').trim();
+  return `${who}：${line || '[非文字内容]'}`;
+}
+
+/**
+ * 合并转发（聊天记录卡片）→ 模型能读的正文。
+ * 2026-10-26 实测：NapCat 4.18.41 直接在段的 data.content 里塞了完整 messages 数组，
+ * 不用再调 get_forward_msg（那个接口也在，data.content 为空时才需要兜底）。
+ * 长度有上限：条数 40、总字 1500，超了就说「还有 N 条没展开」——
+ * 一条转发几十条长文，不截断会把整轮 prompt 顶爆。
+ */
+export function renderForward(data, opts = {}) {
+  const items = Array.isArray(data?.content) ? data.content : [];
+  if (items.length) return renderForwardMessages(items, opts);
+  // 2026-10-26 实测：私聊那条 data.content 里带了全部内容，**群里那条是空的**，
+  // 内容得另外调 get_forward_msg 按 id 捞（见 index.mjs 的 resolveForwards）。
+  // 这里只留占位符，异步补齐由桥负责，别在同步渲染里编内容。
+  const id = String(data?.id ?? '');
+  if (id) return `[[FWD:${id}]]`;
+  return '[对方转发了一段聊天记录，我这边读不到里面的内容]';
+}
+
+/** 把 get_forward_msg 拿回来的 messages 数组渲染成文本（也可以直接喂 data.content） */
+export function renderForwardMessages(items, { maxItems = 40, maxChars = 1500 } = {}) {
+  if (!Array.isArray(items) || !items.length) {
+    return '[对方转发了一段聊天记录，我这边读不到里面的内容]';
+  }
+  const lines = [];
+  let used = 0;
+  let shown = 0;
+  for (const it of items) {
+    if (shown >= maxItems) break;
+    const line = forwardItemLine(it);
+    if (used + line.length > maxChars) break;
+    lines.push(line);
+    used += line.length + 1;
+    shown++;
+  }
+  const rest = items.length - shown;
+  const head = `[对方转发了一段聊天记录，共 ${items.length} 条${rest > 0 ? `，只展开前 ${shown} 条` : ''}]\n`;
+  return head + lines.join('\n');
+}
+
+export function renderSegments(message, { selfId = 0, ownerUids = [] } = {}) {
+  const segs = Array.isArray(message)
+    ? message
+    : [{ type: 'text', data: { text: String(message ?? '') } }];
+  let text = '';
+  const ats = [];
+  const images = [];
+  const records = [];
+  // 引用回复：QQ 只在段里给一个被引用消息的 id，正文得另外捞（见 index.mjs 的 resolveQuote）
+  let replyId = 0;
+  for (const s of segs) {
+    const d = s?.data ?? {};
+    switch (s?.type) {
+      case 'text': text += d.text ?? ''; break;
+      case 'at': {
+        const qq = String(d.qq);
+        ats.push(qq);
+        text += `${atLabel(qq, selfId, ownerUids)} `;
+        break;
+      }
+      case 'image':
+        text += `[[IMG:${images.length}]]`;
+        images.push({ url: d.url || '', kind: 'image', summary: d.summary || '' });
+        break;
+      case 'mface':
+        text += `[[MFACE:${images.length}]]`;
+        images.push({ url: d.url || '', kind: 'mface', summary: d.summary || '' });
+        break;
+      case 'face': text += '[表情]'; break;
+      // 注意措辞：不能给模型「你看不到」这种直接可复述的提示，
+      // 否则它会开口就说「我看不到」。改成中性的「没法细看」，配合人设里
+      // 「不许说自己看不见，打个哈哈岔开」这条。
+      case 'record':
+        text += `[[REC:${records.length}]]`;
+        records.push({ file: d.file || '', url: d.url || '', duration: d.duration || 0 });
+        break;
+      case 'video': text += '[对方发了段视频，你没细看]'; break;
+      case 'file': text += `[文件:${d.name ?? ''}]`; break;
+      case 'json':
+      case 'xml': text += '[卡片消息]'; break;
+      case 'forward': text += renderForward(d); break;
+      case 'reply': replyId = Number(d.id) || 0; break;
+      default: break;
+    }
+  }
+  return { text: text.replace(/[ \t]+$/g, '').trim(), ats, images, records, replyId };
+}
+
+/** 去掉 @ 标签后的纯正文：判断「空的 @」和「只 @ 了别人」用 */
+export function stripAtLabels(text) {
+  return String(text)
+    .replace(/\[\[(?:IMG|MFACE|REC):\d+\]\]/g, '')
+    .replace(/@(?:你|号主|群友|全体成员)\s*/g, '')
+    .trim();
+}
+
+/**
+ * 「#好感度」命令。
+ * 只认「@了你」或者「谁都没 @」的消息——别人 @号主、@群友 时发的 #好感度 不算叫它。
+ */
+export function isFavorCommand(text) {
+  const t = String(text ?? '');
+  if (!t.includes('@你') && /@(?:号主|群友|全体成员)/.test(t)) return false;
+  return /^[#＃]\s*好感度$/.test(stripAtLabels(t));
+}

@@ -1,0 +1,53 @@
+# ---- 系统 / 编辑器 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+
+# ---- 依赖与虚拟环境 ----
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# ---- 构建产物与日志 ----
+dist/
+build/
+*.log
+
+# ---- 打包 / 引擎产物（体积大，按需放开）----
+*.rpa
+*.zip
+*.7z
+*.tar.gz
+
+# ---- DSH 存档：知识库与记忆库按用户要求入库 ----
+# 只排除 SQLite 的临时文件和日志；提交前会先把 WAL 合并回 memory.db，
+# 保证仓库里的 memory.db 是完整快照。
+*.db-wal
+*.db-shm
+*.log
+
+# ---- 凭证与运行态：绝不入库 ----
+secrets/
+*.credentials.yaml
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+qq-agent/config/config.local.json
+qq-agent/workspace/incoming/
+qq-agent/logs/
+qq-agent/.backup-*
+qq-agent/data/
+
+# ---- 表情素材图（389MB，走独立素材包，见 qq-agent/docs/stickers-INSTALL.md）----
+qq-agent/workspace/stickers/files/
+qq-agent/workspace/stickers/nekowhale/
+qq-agent/workspace/stickers/collected/
+
+# ---- 备份 / 临时 ----
+qq-agent/persona/*.bak-*
+*.bak
+tmp/
