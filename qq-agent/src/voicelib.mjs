@@ -4,6 +4,7 @@
  * 列目录与推文件都走 win 通道（反向隧道到本机 server.cjs）。
  */
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 
 const WIN = '/usr/local/bin/win';
 const LIB = 'D:\\DSH\\voice-library';
@@ -65,20 +66,27 @@ export function voicesError() {
   return lastError;
 }
 
-/** 把本机某个文件推到云端缓存，返回云端绝对路径。 */
+/** 把本机某个文件推到云端缓存，返回云端绝对路径。远端名用 ASCII，避免中文过 SSH 命令行。 */
 export async function ensureRemote(name) {
   const safe = String(name || '').replace(/[\\"'`$]/g, '').trim();
   if (!safe) return { ok: false, msg: '名字是空的' };
-  const cached = REMOTE_PREFIX + safe;
-  const cmd = `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\DSH\tools\remote-exec\push-file.ps1" -Path "D:\DSH\voice-library\${safe}"`;
+  const ext = (safe.match(/\.[^.]+$/) || ['.mp3'])[0].toLowerCase();
+  const tag = crypto.createHash('md5').update(safe).digest('hex').slice(0, 10);
+  const remoteName = `voice-${tag}${ext}`;
+  const local = LIB + '\\' + safe;
+  const cmd =
+    'powershell -NoProfile -ExecutionPolicy Bypass -File "D:\\DSH\\tools\\remote-exec\\push-file.ps1" ' +
+    `-Path "${local}" -Name "${remoteName}"`;
   const r = await runWin(cmd, 600000);
-  const tail = r.stdout
+  // win 包装会在末尾加一行 [exit N, ...]，所以按前缀找，不要取最后一行。
+  const lines = r.stdout
     .split(/\r?\n/)
     .map((x) => x.trim())
-    .filter(Boolean)
-    .pop() || '';
-  if (!tail.startsWith(REMOTE_PREFIX)) return { ok: false, msg: tail || r.stderr.trim() || '没推上来' };
-  return { ok: true, path: cached };
+    .filter(Boolean);
+  const okLine = lines.find((x) => x.startsWith('OK ' + REMOTE_PREFIX)) || '';
+  if (okLine) return { ok: true, path: okLine.slice(3).trim(), remoteName };
+  const bad = lines.find((x) => /^(FAIL|BADNAME|SIZE_MISMATCH|NOTFOUND)\b/.test(x)) || lines[lines.length - 1] || '';
+  return { ok: false, msg: bad || r.stderr.trim() || '没推上来' };
 }
 
 /** 从名字或序号里挑一首。序号从 1 开始。 */
@@ -90,9 +98,6 @@ export async function pickVoice(input) {
   if (Number.isInteger(n) && n >= 1 && n <= items.length) return items[n - 1];
   const kw = raw.replace(/\s+/g, '');
   if (!kw) return null;
-  return (
-    items.find((it) => it.name.replace(/\.[^.]+$/, '').replace(/\s+/g, '') === kw) ||
-    items.find((it) => it.name.replace(/\.[^.]+$/, '').replace(/\s+/g, '').includes(kw)) ||
-    null
-  );
+  const bare = (it) => it.name.replace(/\.[^.]+$/, '').replace(/\s+/g, '');
+  return items.find((it) => bare(it) === kw) || items.find((it) => bare(it).includes(kw)) || null;
 }

@@ -99,6 +99,9 @@ const DEFAULTS = {
   agent: {
     profile: 'headless', taskTimeoutMs: 180000, maxConcurrent: 2,
     cwd: 'workspace', telemetry: 'off', jsonEvents: true,
+    // 别人从 QQ 发来的文件放哪：相对 agent.cwd 的一个独立文件夹。
+    // 2026-10-28 用户要求单独建目录，别再和图片一起塞进 incoming/。
+    filesDir: 'qq-files',
   },
   // 滚动摘要：把被时间窗切掉的历史压成几行，接着聊也不忘
   summary: { enabled: true, everyMessages: 80, takeMessages: 60, maxBlocks: 4, maxChars: 700 },

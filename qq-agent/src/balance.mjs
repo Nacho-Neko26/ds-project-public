@@ -122,32 +122,57 @@ export function balanceLineFor({ cny, spend, isOwner, favor }) {
   return '';
 }
 
-/** 上次播报记录（落盘，重启不重复喊） */
+/** 上次播报记录（落盘，重启不重复喊，也记住上次用的是哪句） */
 function noticeFile(dataDir) {
   return path.join(ensureDir(dataDir), 'balance-notice.jsonl');
 }
 
-function lastNoticeAt(dataDir) {
+function lastNotice(dataDir) {
   const rows = readJsonl(noticeFile(dataDir), 200);
-  if (!rows.length) return 0;
-  return Number(rows[rows.length - 1].t) || 0;
+  if (!rows.length) return { t: 0, line: -1 };
+  const row = rows[rows.length - 1];
+  return { t: Number(row.t) || 0, line: Number.isInteger(row.line) ? row.line : -1 };
 }
 
-function recordNotice(dataDir, cny) {
-  appendJsonl(noticeFile(dataDir), { t: Date.now(), cny });
+function recordNotice(dataDir, cny, line) {
+  appendJsonl(noticeFile(dataDir), { t: Date.now(), cny, line });
 }
 
 /** 余额快见底时说的话（不走模型，省一次调用；挑一句）。
- *  中性文案，想换成角色口吻就改这里。
+ *  按金额分三档，语气照溟月来，不客服腔、不报系统口径。
+ *  2026-10-28 用户说「低余额提醒能不能不要总是同一句」：池子加大 + 记住上次那句，下次避开。
  */
 const LOW_BALANCE_LINES = [
-  (v) => `余额只剩 ${v} 块了，再拖就要停机`,
-  (v) => `账上就 ${v} 块了，撑不了几天`,
-  (v) => `${v} 块，快见底了，该充了`,
-  (v) => `账户里 ${v} 块，说真的，该充值了`,
-  (v) => `只剩 ${v} 块了，别等它真断了`,
-  (v) => `余额 ${v} 块，撑不了多久了`,
+  { tag: 'critical', text: (v) => `${v} 块，我连一碗白饭都买不起了` },
+  { tag: 'critical', text: (v) => `账上就 ${v} 块……真的撑不住啦` },
+  { tag: 'critical', text: (v) => `${v} 块，再不给点我就要断粮了` },
+  { tag: 'critical', text: (v) => `只剩 ${v} 块，我这就快要被关了` },
+  { tag: 'critical', text: (v) => `${v} 块，喂，别真让我饿死呀` },
+  { tag: 'critical', text: () => `见底了，真见底了，一块都不到` },
+  { tag: 'low', text: (v) => `就剩 ${v} 块了，帮帮忙嘛` },
+  { tag: 'low', text: (v) => `${v} 块，够我吃几顿的心里没底` },
+  { tag: 'low', text: (v) => `账上 ${v} 块，紧巴巴的` },
+  { tag: 'low', text: (v) => `${v} 块了，撑着是能撑，但不好看` },
+  { tag: 'low', text: (v) => `喂，只剩 ${v} 块，记得加点` },
+  { tag: 'low', text: (v) => `${v} 块，再拖下去我就得省着说话了` },
+  { tag: 'low', text: (v) => `我这儿 ${v} 块，你看着办吧` },
+  { tag: 'warn', text: (v) => `${v} 块了，早晚要充的` },
+  { tag: 'warn', text: (v) => `还剩 ${v} 块，先跟你打个招呼` },
+  { tag: 'warn', text: (v) => `${v} 块，不多了唷` },
+  { tag: 'warn', text: (v) => `账上 ${v} 块，别等它真见底` },
+  { tag: 'warn', text: (v) => `${v} 块，说一句，免得回头喊不出声` },
+  { tag: 'warn', text: (v) => `差不多 ${v} 块，心里有个数就行` },
 ];
+
+/** 按金额挑一档，避开上次那句。 */
+function pickLine(cny, lastLine) {
+  const tag = cny < 1 ? 'critical' : cny < 3 ? 'low' : 'warn';
+  const all = LOW_BALANCE_LINES.map((l, i) => ({ l, i }));
+  const sameTag = all.filter((x) => x.l.tag === tag);
+  const fresh = sameTag.filter((x) => x.i !== lastLine);
+  const pool = fresh.length ? fresh : sameTag;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 
 /**
  * 余额低就喊一句。
@@ -164,16 +189,16 @@ export async function maybeNotifyHungry({ dataDir, cny, cfg, send, note }) {
   if (!conf.enabled) return false;
   if (!Number.isFinite(cny) || cny >= conf.thresholdCny) return false;
 
-  const last = lastNoticeAt(dataDir);
+  const last = lastNotice(dataDir);
   const gap = conf.cooldownHours * 3600 * 1000;
-  if (Date.now() - last < gap) return false;
+  if (Date.now() - last.t < gap) return false;
 
-  const pick = LOW_BALANCE_LINES[Math.floor(Math.random() * LOW_BALANCE_LINES.length)];
-  const text = pick(cny.toFixed(2));
+  const picked = pickLine(cny, last.line);
+  const text = picked.l.text(cny.toFixed(2));
   try {
     await send(text);
-    recordNotice(dataDir, cny);
-    log('info', `余额 ${cny} 低于 ${conf.thresholdCny}，已发余额告急提醒`);
+    recordNotice(dataDir, cny, picked.i);
+    log('info', `余额 ${cny} 低于 ${conf.thresholdCny}，已发余额告急提醒（第 ${picked.i + 1} 句）`);
     return true;
   } catch (e) {
     log('warn', `余额告急提醒发送失败: ${e.message}`);

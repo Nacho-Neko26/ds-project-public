@@ -705,7 +705,9 @@ async function resolveImages(text, images, trusted, meta = {}) {
     // 才退回「给路径自己看」的老路子（将来换支持视觉的模型仍然能用）。
     const desc = await describeCached(file, img.summary);
     if (desc?.text) {
-      out = out.replace(`[[${key}:${i}]]`, `[对方发了一个${tag}，内容是：${desc.text}]`);
+      // 2026-10-28 用户要求「不要只是描述图片，要有自己的回应」：把描述标成「你眼睛看到的」，
+      // 并明令别复述，否则模型会把描述原样念一遍。
+      out = out.replace(`[[${key}:${i}]]`, `[对方发了一个${tag}，你眼里看到的是：${desc.text}（这是我看到的，别复述这段话，直接说你自己对它的反应）]`);
       return;
     }
     if (trusted) {
@@ -714,7 +716,7 @@ async function resolveImages(text, images, trusted, meta = {}) {
         `[对方发了一个${tag}，已存到 ${rel}；用 read_image 工具看它，再据此回应]`);
       return;
     }
-    out = out.replace(`[[${key}:${i}]]`, `[对方发了一个${tag}，内容是：（没细看）]`);
+    out = out.replace(`[[${key}:${i}]]`, `[对方发了一个${tag}，没看清里面是什么（别编，也别问他图里写了啥）]`);
   }));
 
   // 超出上限的图：统一降级
@@ -871,8 +873,11 @@ async function resolveIncoming(text, images, records, trusted, meta = {}, files 
 }
 
 /* ---------- 文件 ---------- */
-// 别人发来的文件落到 incoming/ 下的这个子目录，和图片分开放，找的时候好找
-const filesDir = path.join(incomingDir, 'files');
+// 别人发来的文件单独一个目录（2026-10-28 用户要求「新建一个文件夹存放 qq 接收的文件」）。
+// 以前挂在 incoming/files 下面，和一堆图片混在一起不好翻，现在提到 workspace 顶层。
+// 想改位置就写 config.agent.filesDir，相对路径按 agentCwd 算。
+const filesDir = path.resolve(cfg.agentCwd, cfg.raw.agent?.filesDir || 'qq-files');
+ensureDir(filesDir);
 const TEMP_SCAN_MS = 12000;
 
 /**
@@ -2313,6 +2318,29 @@ async function runDirectives(session, dir, { last, profiles, batchText = '', rec
       },
     });
     note(r.ok ? 'info' : 'warn', `[${session.key}] 群管理 ${op.op}：${r.message}`);
+    // 2026-10-28 用户要求：管理员指令一成功，就把触发者登记进人物档案（他既然使唤我，就该被记住）
+    if (r.ok && senderUid) {
+      try {
+        const pr2 = session.profiles ?? (session.profiles = loadProfiles(cfg.agentCwd, session.key));
+        pr2.people = pr2.people || {};
+        const uid2 = String(senderUid);
+        const hit = (recent || []).find((m) => String(m.uid || m.user_id || '') === uid2);
+        const rec = pr2.people[uid2] || (pr2.people[uid2] = {
+          displayName: hit?.name || hit?.nickname || uid2,
+          favor: FAVOR.init,
+          firstSeen: Date.now(),
+        });
+        rec.displayName = rec.displayName || hit?.name || uid2;
+        rec.lastSeen = Date.now();
+        rec.adminCalls = Number(rec.adminCalls || 0) + 1;
+        rec.lastAdminOp = op.op;
+        rec.lastAdminAt = Date.now();
+        saveProfiles(cfg.agentCwd, session.key, pr2);
+        note('info', `[${session.key}] 已登记 ${rec.displayName} 的档案（群管 ${op.op}）`);
+      } catch (e) {
+        note('warn', `档案登记失败: ${e.message}`);
+      }
+    }
     if (r.ok) did = true;
     else problems.push(r.message);
   }

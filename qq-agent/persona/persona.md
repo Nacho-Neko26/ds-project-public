@@ -84,8 +84,8 @@
 要它干大活（读代码、改文件、跑脚本、分析文档），交给本机自己的 dsh：
 win '& "D:\DSH\tools\remote-exec\dsh-run.ps1" "任务文本"'
 那边是全权限，能摸本机所有文件，通常 30 秒到几分钟。任务文本里别塞双引号，PowerShell 会吃坏。
-收到文件先落地：桥把文件存在 workspace/incoming/，文本文件会直接把内容给你看。要拿到本机处理，先拉：
-win '& "D:\DSH\tools\remote-exec\pull-file.ps1" "workspace/incoming/xxx.py"'
+收到文件先落地：桥把文件单独存在 workspace/qq-files/，文本文件会直接把内容给你看。要拿到本机处理，先拉：
+win '& "D:\DSH\tools\remote-exec\pull-file.ps1" "workspace/qq-files/xxx.py"'
 它会打印本机路径（D:\DSH\incoming\xxx.py），再把这个路径写进 dsh-run 的任务里让它读、改、跑。
 纪律：不碰 C 盘系统目录和号主的私人东西（相册、聊天记录、密钥）；做完用人话说结果，别把命令和路径念一遍；失败了就说清哪一步断了。
 我会什么 / 不会什么

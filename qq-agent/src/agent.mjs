@@ -238,7 +238,7 @@ export class AgentRunner {
    *   'web'  → 只留 tool-web，能搜网页但碰不到文件/shell（普通群友被 @ 时）
    *   'none' → 不给工具（默认）
    */
-  async run({ prompt, toolMode = 'none', withTools, permissionMode, persona = true, extraPatch = null, modelPatch = true }) {
+  async run({ prompt, toolMode = 'none', withTools, permissionMode, persona = true, extraPatch = null, modelPatch = true, timeoutMs = 0 }) {
     if (!this.dsh.script) throw new Error('dsh 入口未找到');
     // 兼容老调用：withTools: true 等价于 toolMode: 'full'
     const mode = withTools === true ? 'full' : (withTools === false ? 'none' : toolMode);
@@ -279,7 +279,7 @@ export class AgentRunner {
       // modelPatch: false 时完全不挂路线 patch —— 图片描述要把模型钉在能吃图的官方模型上，
       // 这里再追加一次 relay21r 会把它覆盖回去（2026-10-28 踩过：patch 写了官方，还是走中转）。
       const args = [...baseArgs(), ...(modelPatch ? ['--patch', this.modelPatches[r]] : [])];
-      const out = await this.#spawn([...args, ...(wantJson ? ['--json'] : []), prompt], env);
+      const out = await this.#spawn([...args, ...(wantJson ? ['--json'] : []), prompt], env, timeoutMs);
       return this.#finish(out, wantJson);
     };
 
@@ -287,7 +287,7 @@ export class AgentRunner {
     if (wantJson && !result.ok && this.#looksLikeUnknownFlag(result.stderr)) {
       log('warn', 'dsh 不支持 --json，退回纯文本模式');
       const args = [...baseArgs(), ...(modelPatch ? ['--patch', this.modelPatches[route]] : []), prompt];
-      const plain = await this.#spawn(args, env);
+      const plain = await this.#spawn(args, env, timeoutMs);
       return { ...plain, text: stripAnsi(plain.stdout).trim(), usage: null, route };
     }
 
@@ -327,7 +327,7 @@ export class AgentRunner {
   }
 
   /** 起一次 dsh 子进程，返回 { code, elapsed, stdout, stderr, timedOut } */
-  async #spawn(args, env) {
+  async #spawn(args, env, budgetMs = 0) {
     const startedAt = Date.now();
     const child = spawn(this.dsh.node, [this.dsh.script, ...args], {
       cwd: this.cfg.agentCwd,
@@ -344,7 +344,7 @@ export class AgentRunner {
       if (stderr.length > 200_000) stderr = stderr.slice(-100_000);
     });
 
-    const timeoutMs = this.cfg.raw.agent.taskTimeoutMs;
+    const timeoutMs = budgetMs || this.cfg.raw.agent.taskTimeoutMs;
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -374,6 +374,10 @@ export class AgentRunner {
    * 用中立提示、不挂人设；工具开但权限只读。
    */
   async describeImage(file, hint = '', opts = {}) {
+    // 大图先压小再送视觉模型（2026-10-28 用户要求：自动压缩、20 秒超时）
+    const slim = await slimForVision(file, this.cfg.raw.voice?.ffmpeg || 'ffmpeg');
+    if (slim.slim) log('info', `图片压缩 ${Math.round(slim.from / 1024)}KB → ${Math.round(slim.to / 1024)}KB`);
+    const visionFile = slim.path;
     // 动图拆帧拼图：一张网格图里塞了 N 帧，视觉模型很容易当成「N 张小图」来描述，
     // 于是角色在群里说「这十六张砸过来」（2026-10-26 用户抓到）。这里先把口径说死。
     const film = opts.filmstrip && Number(opts.filmstrip.frames) > 1 ? Number(opts.filmstrip.frames) : 0;
@@ -392,7 +396,7 @@ export class AgentRunner {
       'ocr 原样抄下图上的字，一个字都不要改、不要翻译；没有文字就留空串。',
       'summary 要客观：不用第一人称、不加角色口吻；图里有文字就原样读出来。',
       hint ? '（图片可能来自聊天气泡，附注：' + hint + '）' : '',
-      '图片路径：' + file,
+      '图片路径：' + visionFile,
     ].filter(Boolean).join('\n');
     this.#writeDescribePatch();
     return this.run({
@@ -402,8 +406,37 @@ export class AgentRunner {
       persona: false,
       extraPatch: this.describePatch,
       modelPatch: false,
+      timeoutMs: 20000,
     });
   }
+}
+
+/**
+ * 送进视觉模型前先把图压小。
+ * 2026-10-28 用户要求「网页图片自动压缩，不要卡很久，20s 超时」：
+ * 大图会让 read_image 的工具往返拖到十几秒还不稳，先按最长边 1280 重编码成 JPEG。
+ */
+async function slimForVision(file, ffmpeg = 'ffmpeg') {
+  let size = 0;
+  try { size = fs.statSync(file).size; } catch { return { path: file, slim: false }; }
+  if (size <= 200 * 1024) return { path: file, slim: false };
+  const out = path.join(os.tmpdir(), `vision-${Date.now()}-${path.basename(file, path.extname(file))}.jpg`);
+  const args = [
+    '-y', '-i', file,
+    '-vf', "scale='min(1280,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease",
+    '-q:v', '4', out,
+  ];
+  const ok = await new Promise((resolve) => {
+    try {
+      const c = spawn(ffmpeg, args, { windowsHide: true, stdio: 'ignore' });
+      c.on('close', (code) => resolve(code === 0));
+      c.on('error', () => resolve(false));
+    } catch { resolve(false); }
+  });
+  let to = 0;
+  try { if (ok) to = fs.statSync(out).size; } catch { to = 0; }
+  if (!to) return { path: file, slim: false };
+  return { path: out, slim: true, from: size, to };
 }
 
 /**
