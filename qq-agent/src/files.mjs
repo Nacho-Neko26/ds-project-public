@@ -8,6 +8,7 @@
  * 单独一个文件是为了能写单测：index.mjs 一 import 就会连 NapCat、起服务。
  */
 import fs from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { ensureDir, log } from './util.mjs';
 
@@ -59,10 +60,15 @@ export function uniquePath(dir, name) {
 /**
  * 下载一个 QQ 文件到 destDir，返回 { file, size }；失败返回 null。
  * 不抛异常：调用方是消息处理主链路，一个文件下不动不能连带把整条回复吞了。
+ *
+ * 流式写盘：200MB 的上限如果先 arrayBuffer 再 writeFileSync，峰值内存要两份，
+ * 服务器只有 3.5G 内存还跑着模型。这里边读边写，内存恒定。
  */
 export async function downloadFile(url, destDir, name, timeoutMs = 60000) {
   if (!url || !/^https?:/i.test(url)) return null;
   ensureDir(destDir);
+  const file = uniquePath(destDir, name);
+  let handle = null;
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(timeoutMs),
@@ -77,17 +83,32 @@ export async function downloadFile(url, destDir, name, timeoutMs = 60000) {
       log('warn', `[文件] 太大（${humanSize(declared)}），不下载`);
       return null;
     }
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (!buf.length) return null;
-    if (buf.length > MAX_FILE_BYTES) {
-      log('warn', `[文件] 太大（${humanSize(buf.length)}），丢弃`);
+    if (!res.body) return null;
+    handle = await fsp.open(file, 'w');
+    let total = 0;
+    for await (const chunk of res.body) {
+      total += chunk.length;
+      if (total > MAX_FILE_BYTES) {
+        log('warn', `[文件] 超过 ${humanSize(MAX_FILE_BYTES)}，中断`);
+        await handle.close();
+        handle = null;
+        fs.rmSync(file, { force: true });
+        return null;
+      }
+      await handle.write(chunk);
+    }
+    await handle.close();
+    handle = null;
+    if (!total) {
+      fs.rmSync(file, { force: true });
       return null;
     }
-    const file = uniquePath(destDir, name);
-    fs.writeFileSync(file, buf);
-    return { file, size: buf.length };
+    return { file, size: total };
   } catch (e) {
     log('warn', `[文件] 下载异常：${e.message}`);
+    if (handle) { try { await handle.close(); } catch { /* ignore */ } }
+    // 半截文件不能留：下次同名会跳过，读出来的内容是残的
+    try { fs.rmSync(file, { force: true }); } catch { /* ignore */ }
     return null;
   }
 }

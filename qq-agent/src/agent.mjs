@@ -395,7 +395,7 @@ export class AgentRunner {
  * config.json → reply.groupChance：{ default: [0.2, 0.4], '<GROUP_ID_2>': [0.5, 0.7] }
  * 按群号覆盖，没配就回落 default；配坏了也回落，不报错。
  */
-export function groupChanceLabel(cfg, chatKey, boost = false) {
+export function groupChancePair(cfg, chatKey, boost = false) {
   const map = cfg?.raw?.reply?.groupChance;
   const toPair = (v) => (Array.isArray(v) && v.length >= 2 && v.every((n) => Number.isFinite(Number(n))) ? v : null);
   const def = toPair(map?.default) || [0.2, 0.4];
@@ -410,9 +410,21 @@ export function groupChanceLabel(cfg, chatKey, boost = false) {
     if (hi < 1 && hi - lo < 0.2 - 1e-9) hi = Math.min(1, lo + 0.2);
     pair = [lo, hi];
   }
-  const lo = Math.round(Number(pair[0]) * 100);
-  const hi = Math.round(Number(pair[1]) * 100);
-  return `${lo}%~${hi}%`;
+  const clamp1 = (n) => Math.max(0, Math.min(1, Number(n)));
+  return [clamp1(pair[0]), clamp1(pair[1])];
+}
+
+/** 同一个概率区间的文案版（写进 prompt 给人看的那句）。 */
+export function groupChanceLabel(cfg, chatKey, boost = false) {
+  const [lo, hi] = groupChancePair(cfg, chatKey, boost);
+  return `${Math.round(lo * 100)}%~${Math.round(hi * 100)}%`;
+}
+
+/** 真掷骰：区间里均匀取一个点再掷一次，返回 { hit, pct }。 */
+export function rollGroupChance(cfg, chatKey, boost = false, rnd = Math.random) {
+  const [lo, hi] = groupChancePair(cfg, chatKey, boost);
+  const p = hi > lo ? lo + rnd() * (hi - lo) : lo;
+  return { hit: rnd() < p, pct: Math.round(p * 100) };
 }
 
 /** 组装送给模型的一轮输入 */

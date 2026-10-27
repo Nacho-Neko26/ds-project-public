@@ -7,7 +7,7 @@ import { OneBot } from './onebot.mjs';
 import { HistoryStore, speakerLabel } from './context.mjs';
 import { renderSegments, renderForwardMessages, stripAtLabels, isFavorCommand } from './render.mjs';
 import { asksForVoice, extractVoiceDirective } from './voice-intent.mjs';
-import { AgentRunner, buildPrompt, readCredential } from './agent.mjs';
+import { AgentRunner, buildPrompt, readCredential, rollGroupChance } from './agent.mjs';
 import { startControl } from './control.mjs';
 import { downloadImage } from './media.mjs';
 import {
@@ -2959,6 +2959,10 @@ async function handleBatch(session, batch) {
           + '直接接着上下文说；要是那些话跟你没关系、也插不上嘴，就 <SKIP>，别点破这个 @。）'
         : '',
       forced ? '（刚才那条是 @你 或者喊了你的名字——这一轮必须回，哪怕只一句。别装死。）' : '',
+      // 2026-10-28：窗口里／掷骰进来的消息给她一句提示，让她知道自己是被允许插话、不是被打扰
+      forced || session.kind !== 'group' ? '' : (session.pickReason === 'wake'
+        ? '（这几条不是冲你来的，但你刚被叫过——接着刚才的话头往下聊就行，有话说就接一句，没话就 <SKIP>。）'
+        : '（这几条不是冲你来的，是按概率挑中你的——真的对味就插一句，凑不上就 <SKIP>。）'),
     ].filter(Boolean).join('\n\n'),
   });
 
@@ -3530,16 +3534,45 @@ ob.on('event', (ev) => {
       return;
     }
 
-    // 2026-10-27 用户定：群里只回「@ 她」和「叫了溟月」这两种。
-    // 原来被 @ 之后还开 10 分钟 full 窗口（窗口内所有普通消息都会喂给模型），
-    // 群里好几个人同时在聊，这一档最容易让她瞎接话，已取消。
-    if (mode === 'mention' && !mentioned) { state.stats.ignored++; return; }
-    if (mode === 'full' && !mentioned && !personaNameHit) {
-      // 没被 @ 也没叫名字（外号不算）就不吭声
-      state.stats.ignored++;
-      note('debug', `[group:${gid}] 没@没说溟月，静默：${String(text).slice(0, 20)}`);
-      return;
+    // —— 谁的话才进模型（2026-10-28 用户定，改掉了原来的硬门禁）——
+    // ① 被 @ 或叫了「溟月」：进，而且这一轮必须回；
+    // ② 叫过之后 wakeWindowMinutes 分钟内（默认 5）：群里普通消息也照喂，让她接着聊；
+    // ③ 其余情况按 reply.groupChance 真掷骰，命中才进来。
+    //   以前这个概率只写进 prompt 当摆设，桥侧在下面直接 return 了，所以「不@就不回」。
+    const calledNow = mentioned || personaNameHit;
+    const wakeMs = Math.max(0, Number(cfg.raw.reply.wakeWindowMinutes ?? 5)) * 60_000;
+    if (calledNow && wakeMs > 0) session.wakeUntil = Date.now() + wakeMs;
+    const inWake = Date.now() < (session.wakeUntil || 0);
+    // 这一轮为什么进模型：''=被叫（必须回）／'wake'=叫过之后的窗口里／'roll'=掷骰中了
+    let pickReason = '';
+
+    // 「旁边几条」：不管这回回不回，别人的话都先攒着——等哪次被叫到，这些就是上下文。
+    const keepRecent = () => {
+      session.recentContext = session.recentContext || [];
+      session.recentContext.push({
+        uid, name: senderName(ev), text, time: ev.time ? ev.time * 1000 : Date.now(), messageId: rawId,
+      });
+      if (session.recentContext.length > 60) session.recentContext.shift();
+    };
+
+    // mention 模式的群照旧：只有被叫才算，不开窗口、不掷骰。
+    if (mode === 'mention' && !calledNow) { state.stats.ignored++; keepRecent(); return; }
+
+    if (!calledNow && !inWake) {
+      const roll = rollGroupChance(cfg, key, false);
+      if (!roll.hit) {
+        state.stats.ignored++;
+        keepRecent();
+        note('debug', `[group:${gid}] 没被叫、掷骰没中（${roll.pct}%），静默：${String(text).slice(0, 20)}`);
+        return;
+      }
+      pickReason = 'roll';
+      note('info', `[group:${gid}] 没被叫、掷骰中了（${roll.pct}%），接着聊`);
+    } else if (!calledNow) {
+      pickReason = 'wake';
+      note('debug', `[group:${gid}] 被叫过、还在 ${Math.ceil((session.wakeUntil - Date.now()) / 60_000)} 分钟窗口里，照喂`);
     }
+    session.pickReason = pickReason;
 
     if (!session.title || session.title === `群 ${gid}`) {
       if (ev.group_name) session.title = `群 ${ev.group_name}`;
@@ -3592,6 +3625,7 @@ ob.on('event', (ev) => {
 
     // —— 有人 @她 / 喊她外号：这一轮必须回 ——
     // 除非她正对这个人冷淡（怒气 Lv2 及以上），冷淡时照常听着，但不强求开口。
+    // 2026-10-28：窗口内的消息、掷骰中的消息也进模型，但只有被叫才强制回。
     const called = mentioned || personaNameHit;
     if (called) {
       const profiles = session.profiles ?? (session.profiles = loadProfiles(cfg.agentCwd, key));
@@ -3607,9 +3641,11 @@ ob.on('event', (ev) => {
       } else {
         note('info', `[${key}] 被叫，但她正对这人冷淡，不强制回`);
       }
-      // 旁边几条：她刚才正在看的那些，一起带上，别让上下文断在半截
+    }
+    // 旁边几条：她刚才正在看的那些，一起带上，别让上下文断在半截
+    if (!session.busy) {
       const ctx = session.recentContext || [];
-      if (ctx.length && !session.busy) {
+      if (ctx.length) {
         // 2026-10-26 修：只把「别人说的」带回来。自己的话已经在 history 里（role:'assistant'），
         // 再灌回新消息会让模型对着自己上一句往下说，表现就是反复同一种句式。
         const missing = ctx.filter((c) => !c.self && !session.buffer.some((b) => b.messageId === c.messageId));
@@ -3619,13 +3655,6 @@ ob.on('event', (ev) => {
         }
       }
       session.recentContext = [];
-    } else {
-      // 不是叫她：记进「旁边几条」的环形缓冲（最多 30 条，约覆盖最近半小时）
-      session.recentContext = session.recentContext || [];
-      session.recentContext.push({
-        uid, name: senderName(ev), text, time: ev.time ? ev.time * 1000 : Date.now(), messageId: rawId,
-      });
-      if (session.recentContext.length > 60) session.recentContext.shift();
     }
 
     void (async () => {
