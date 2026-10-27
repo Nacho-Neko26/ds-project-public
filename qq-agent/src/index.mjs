@@ -29,9 +29,14 @@ import { loadFaceUsage, recordFaces, topFaces } from './face-usage.mjs';
 import { latestDiary, ensureYesterdayDiary, dayKey, recentDiaries, compactDiaries, backtrackDiaries, renderBacktrack, lastClearDay, setLastClearDay } from './diary.mjs';
 import { readHabits, updateHabits, habitsConfig } from './habits.mjs';
 import { learnMemories, renderMemory, memoryConfig } from './memory.mjs';
+import { appendMemory, queryMemory, removeMemory, clearMemory } from './memory.mjs';
+import { querySlang, submitSlang, renderSlang } from './slang.mjs';
 import { getBalance, maybeNotifyHungry, balanceConfig, recordBalancePoint, computeSpend, balanceLineFor } from './balance.mjs';
 import { getAmbient, renderAmbient } from './ambient.mjs';
 import { createSelfwake, selfwakeConfig } from './selfwake.mjs';
+import { createGreeting } from './greeting.mjs';
+import { createUpdateCheck } from './updates.mjs';
+import { tick as purposeTick, takePending as purposeTakePending, markSpoken as purposeMarkSpoken, purposeSetMuted } from './purpose.mjs';
 import { readSummary, maybeSummarize } from './summary.mjs';
 import { maybeDigestKnowledge } from './knowledge-digest.mjs';
 import { listMemory, readMemory, writeMemory, searchMemory } from './memfiles.mjs';
@@ -40,6 +45,7 @@ import { renderPlainVoice, renderVoice, renderMoodVoice, renderBailianVoice } fr
 import { extractDirectives, normalizeDirectiveLines, scrubDirectiveLeaks } from './directives.mjs';
 import { stripThinkingLeak, cleanToolReport } from './thinking-guard.mjs';
 import { rankRows as rankStickerRows } from './sticker-score.mjs';
+import { enrichRows, semBadge, faceSemantics } from './sticker-semantics.mjs';
 import {
   addReminder, cancelReminder, listReminders, renderReminders, startReminderTicker, fmtAt, remindersConfig,
 } from './reminders.mjs';
@@ -77,6 +83,16 @@ import { detectSingRequest } from './sing-intent.mjs';
 import { recordIdentity, renderIdentityBlock, resolveMentions } from './identity.mjs';
 import { enqueueCover, rememberCoverJob, startCoverWatcher, ensureCoverDirs, executorOnline } from './cover.mjs';
 import { pickOnlineReply, pickOfflineReply } from './cover-reply.mjs';
+import { pickLocalOkReply, pickLocalMissReply } from './local-reply.mjs';
+// 本机处理（2026-10-28 用户要求）：「传输文件用本机 dsh 操作后再发回」。
+// 和翻唱同一套拉模式：桥排队 → 本机 tools/local-agent.py 来拉 → 做完把产物传回 done/。
+import {
+  ensureLocalDirs, enqueueLocal, localExecutorOnline, localQueueDepth,
+  rememberLocalInput, lastLocalInput, extractFileDirective, sendFileToChat, startLocalWatcher,
+} from './localfile.mjs';
+import { listVoices, voicesError, pickVoice, ensureRemote } from './voicelib.mjs';
+// 出站闸（2026-10-28）：说出口之前把本机路径、凭据原文、受保护的号打掉。
+import { auditOutbound, escapeCq } from './outbound.mjs';
 
 let cfg = loadConfig();
 initCharacter(cfg);
@@ -106,6 +122,8 @@ const state = {
   balance: null,
   balanceAt: 0,
   lastSession: null, // 最近说过话的会话（余额喊饿已改为固定发主人私聊，不再用它）
+  // 她自己要的安静（__WAKE__ off）：时间戳，过了就自动恢复
+  wakeOffUntil: 0,
 };
 
 /**
@@ -447,6 +465,25 @@ function pickFresh(rows, usage, now, windowMs) {
   return fresh.length >= 3 ? fresh : rows;
 }
 
+/**
+ * 小黄脸的语义命中分（2026-10-28）。黄脸没有描述文本，只有名字和 id，
+ * 所以只按名字推语义；这句话里出现了哪个语义维度，对应黄脸就往前挪。
+ */
+function faceHitScore(f, q) {
+  const name = String(f?.name || FACE_NAMES[f?.id] || '');
+  const tags = faceSemantics(name);
+  let s = 0;
+  for (const t of tags) if (q.includes(t)) s += 3;
+  if (name && q.includes(name.toLowerCase())) s += 2;
+  return s;
+}
+
+function faceLabelOf(f) {
+  const name = f?.name || FACE_NAMES[f?.id] || '表情';
+  const tags = faceSemantics(name);
+  return tags.length ? `${name} [${tags.join('·')}]` : name;
+}
+
 function stickerCatalog(key, hintText = '') {
   const parts = [];
 
@@ -456,11 +493,14 @@ function stickerCatalog(key, hintText = '') {
   const now = Date.now();
   const freshWindowMs = Number(cfg.raw.stickers?.freshWindowMs) || 25 * 60000;
   const localMax = stickerLimit('local', 8);
-  const rows = pickFresh(uniqueRows(readJsonl(path.join(stashDir, `${safeFileName(key)}.jsonl`), 1000), stickerKeyOf), usage, now, freshWindowMs);
+  let rows = pickFresh(uniqueRows(readJsonl(path.join(stashDir, `${safeFileName(key)}.jsonl`), 1000), stickerKeyOf), usage, now, freshWindowMs);
   if (rows.length) {
+    // 语义层：给每行补情绪/用途字段，再按这句话的场景排一下，最后才截断
+    enrichRows(rows, stickerLabel);
+    if (hintText.trim()) rows = rankStickerRows(rows, hintText);
     const start = Math.max(0, rows.length - localMax);
     const lines = [];
-    for (let i = start; i < rows.length; i++) lines.push(`#${rows[i].index} ${stickerLabel(rows[i])}${animTag(rows[i])}`);
+    for (let i = start; i < rows.length; i++) lines.push(`#${rows[i].index} ${stickerLabel(rows[i])}${semBadge(rows[i])}${animTag(rows[i])}`);
     // 目录里直接写出"怎么发"，否则模型会照着 #N 抄一个 #4 出来
     parts.push(`【本会话素材】（要发第几条，就单独输出一行 __SEND_STICKER__ 加 # 后面的数字，例如 __SEND_STICKER__ ${rows[rows.length - 1].index}）\n${lines.join('\n')}`);
   }
@@ -471,6 +511,8 @@ function stickerCatalog(key, hintText = '') {
   const rot = sampleWindow(pool, sharedMax, loadRotate(cfg.dataDir), (r) => r.key);
   saveRotate(cfg.dataDir, rot.state);
   let shared = rot.picked;
+  // 语义层：先补情绪/用途字段（打分器读 row.emotion / row.use）
+  enrichRows(shared, stickerLabel);
   // 按当前这句话的情绪/场景打分排序（移植 nekowhale 的 search.ts 权重），没查询就保持抽样顺序
   if (hintText.trim() && shared.length) shared = rankStickerRows(shared, hintText);
   // 有查询时把「新收录的图」提到最前面（用户 2026-10-25 要求给新图加权重）：
@@ -480,18 +522,26 @@ function stickerCatalog(key, hintText = '') {
   if (shared.length) {
     const start = Math.max(0, shared.length - sharedMax);
     const lines = [];
-    for (let i = start; i < shared.length; i++) lines.push(`S${shared[i].index} ${stickerLabel(shared[i])}${animTag(shared[i])}`);
+    for (let i = start; i < shared.length; i++) lines.push(`S${shared[i].index} ${stickerLabel(shared[i])}${semBadge(shared[i])}${animTag(shared[i])}`);
     parts.push(`【共享图库】（共 ${sharedTotal} 张，本次抽到 ${shared.length} 张，用完一批会换下一批。要发第几条，就单独输出一行 __SEND_STICKER__ 加 S 开头的编号，例如 __SEND_STICKER__ S${shared[shared.length - 1].index}）\n${lines.join('\n')}`);
   }
 
   // 【群友常发的黄脸】QQ 小黄脸（face 段），按群里出现次数排序；
   // 2026-10-25 用户要求「群聊天里面的表情也要收录使用」，之前它只显示成「[表情]」不入库。
   const faceUsage = loadFaceUsage(cfg.dataDir);
-  const faceRows = topFaces(faceUsage, 12).filter(
+  let faceRows = topFaces(faceUsage, 12).filter(
     (f) => !sentRecently(usage, `face:${f.id}`, now, freshWindowMs),
   );
+  // 语义层：有场景词时把语义对得上的黄脸提到前面（原来纯按群里出现次数）
+  if (hintText.trim() && faceRows.length) {
+    const q = hintText.toLowerCase();
+    faceRows = faceRows
+      .map((f, i) => ({ f, i, s: faceHitScore(f, q) }))
+      .sort((a, b) => b.s - a.s || a.i - b.i)
+      .map((x) => x.f);
+  }
   if (faceRows.length) {
-    const lines = faceRows.map((f) => `F${f.id} ${f.name || FACE_NAMES[f.id] || '表情'}`);
+    const lines = faceRows.map((f) => `F${f.id} ${faceLabelOf(f)}`);
     parts.push(
       `【群友常发的黄脸】（要发就单独输出一行 __SEND_STICKER__ F<编号>，例如 __SEND_STICKER__ F${faceRows[0].id}）\n${lines.join('  ')}`,
     );
@@ -516,7 +566,17 @@ function stickerHint(key, hintText = '', { allowed = true } = {}) {
   const selfPick = mayPick
     ? '【这一轮可以配一张】翻到合适的就挑一张 S 开头发出去再说话；都对不上味儿就只说话，别硬凑。'
     : '【表情这轮先不发】一分钟内刚甩过一张，这轮只说话，等下一轮再说。';
-  return `${cat}\n\n${selfPick}\n\n【挑图】同一张别连着发，刚发过的这次没列出来。目录里带「·动图」的是会动的 GIF，没带的是静图；想发会动的就挑带「·动图」的。\n\n想发某条：单独输出一行 __SEND_STICKER__ <序号>（本会话素材写 # 后的数字，共享图库写 S 开头的编号，黄脸写 F 开头的编号）。这一行不会显示成文字。\n\n【连发】对方点名要几张、或者要刷屏的时候，一行里写多个编号就行：__SEND_STICKER__ S3 S8 S12。一次最多 ${MAX_STICKERS_PER_REPLY} 张，按顺序发，中间会自动隔一下。没被要求就别刷屏。`;
+  return `${cat}\n\n${selfPick}\n\n【你自己的样子】被问到「你长什么样」「发张自拍」，或者你自己想露个脸，就单独输出一行 __SELFIE__，桥会把你的形象图发出去（一行一张，答案照常写）。
+
+【记东西 / 查东西】这些不用等指令，你自己就能做。每条都单独占一行，行本身不会发出去：
+__MEMORY__ append 一句话        记进这儿（群里就记这个群），一句别超 60 字
+__MEMORY__ query 关键词         把记着的调出来看一眼，桥会另发一条给你
+__MEMORY__ remove 一句话片段     删掉那条
+__MEMORY__ clear               把这一档清空（别乱用）
+__SLANG__ query 词              这个叫法是啥意思
+__SLANG__ submit 词=意思         学会了新叫法就提报上去，主人过目才算数
+
+【想安静一会儿】这个不用等别人说：单独输出一行 __WAKE__ off 120（单位分钟，最多 720），这段时间谁都不会替你开口；写 __WAKE__ on 立刻恢复。夜里想睡、或者不想被硬拉着说话的时候用。\n\n【收别人的图】看见谁发的图想留下来，单独输出一行 __COLLECT_STICKER__ #3（数字就是本会话素材 # 后面的号）。收进来的会进共享图库，以后你自己也能发。\n\n【改图库说明】哪张图的名字对不上，单独输出一行 __STICKER_REMARK__ S3 侧目嫌弃挥手（S 编号，空格，新说明）。\n\n【有意见就说】觉得哪里别扭、想改什么，单独输出一行 __FEEDBACK__ 内容。这条只给主人看，不进对话。\n\n【挑图】同一张别连着发，刚发过的这次没列出来。目录里带「·动图」的是会动的 GIF，没带的是静图；想发会动的就挑带「·动图」的。\n\n想发某条：单独输出一行 __SEND_STICKER__ <序号>（本会话素材写 # 后的数字，共享图库写 S 开头的编号，黄脸写 F 开头的编号）。这一行不会显示成文字。\n\n【连发】对方点名要几张、或者要刷屏的时候，一行里写多个编号就行：__SEND_STICKER__ S3 S8 S12。一次最多 ${MAX_STICKERS_PER_REPLY} 张，按顺序发，中间会自动隔一下。没被要求就别刷屏。`;
 }
 
 /* ---------- 看图：下载 + 描述 ---------- */
@@ -671,9 +731,13 @@ async function resolveImages(text, images, trusted, meta = {}) {
 const QUOTE_CACHE = new Map(); // messageId → 渲染好的提示文本（空串表示取不到）
 const QUOTE_CACHE_MAX = 200;
 
-/* NapCat 跑在 docker 里，get_image 回的是容器内路径；宿主机上是另一棵树。
- * 按 docker-compose 的挂载关系换前缀，换不到就原样返回（本机直跑时就不用换）。 */
-const QQ_PATH_MAP = [['/app/.config/QQ', '/root/napcat/data/qq']];
+/* 协议端跑在 docker 里，get_image / get_file 回的是容器内路径；宿主机上是另一棵树。
+ * 按 docker-compose 的挂载关系换前缀，换不到就原样返回（本机直跑时就不用换）。
+ * 2026-10-28 换成 SnowLuma：/app/.config → /root/snowluma/config、/app/data → /root/snowluma/data。 */
+const QQ_PATH_MAP = [
+  ['/app/.config/QQ', '/root/snowluma/config/QQ'],
+  ['/app/data', '/root/snowluma/data'],
+];
 function toHostQQPath(p) {
   const s = String(p || '');
   for (const [inside, outside] of QQ_PATH_MAP) {
@@ -812,13 +876,31 @@ const filesDir = path.join(incomingDir, 'files');
 const TEMP_SCAN_MS = 12000;
 
 /**
- * NapCat 收在线文件（QQ 私聊里点「发送文件」走的 onlinefile 段）后，会把文件下到
- * 容器内的 /app/.config/QQ/NapCat/temp/，宿主机上是另一个前缀。这里按名字去捞最新的那个。
+ * 收在线文件/图片时，协议端会先把文件落到自己的 temp 目录，宿主机上是另一个前缀。
+ * 这里按名字去捞最新的那个。2026-10-28 换 SnowLuma 后它的落点是
+ * /app/.config/QQ/nt_qq_<hash>/nt_temp，老的 NapCat/temp 也一并留着扫。
  */
+function tempDirCandidates() {
+  const out = [];
+  for (const [inside, outside] of QQ_PATH_MAP) {
+    if (inside === '/app/.config/QQ') {
+      out.push(outside + '/NapCat/temp');
+      // snowluma：/app/.config/QQ/nt_qq_*/nt_temp
+      try {
+        for (const n of fs.readdirSync(outside)) {
+          if (n.startsWith('nt_qq_')) out.push(path.join(outside, n, 'nt_temp'));
+        }
+      } catch { /* 没有就算了 */ }
+    } else {
+      out.push(outside + '/NapCat/temp');
+    }
+  }
+  out.push(path.join(cfg.agentCwd, '..', 'napcat', 'data', 'qq', 'NapCat', 'temp'));
+  return out;
+}
+
 function findNewestInTempDir(name, sinceMs) {
-  const dirs = QQ_PATH_MAP.map(([inside, outside]) => outside + '/NapCat/temp').concat([
-    path.join(cfg.agentCwd, '..', 'napcat', 'data', 'qq', 'NapCat', 'temp'),
-  ]);
+  const dirs = tempDirCandidates();
   const want = String(name || '').toLowerCase();
   let best = null;
   for (const dir of dirs) {
@@ -840,10 +922,15 @@ function findNewestInTempDir(name, sinceMs) {
 }
 
 /**
- * 在线文件（C2C）：调 receive_online_file 让 NapCat 去下载，然后等 temp 目录里出现它。
+ * 在线文件（C2C）：调 receive_online_file 让协议端去下载，然后等 temp 目录里出现它。
  * 只有私聊能用这个接口——群里的在线文件走的是群文件柜，不需要收。
+ *
+ * 2026-10-28 换 SnowLuma 底座后这组接口整个没了（grep 不到 receive_online_file），
+ * 调一次就报未知 action。以前会白等 12 秒扫描，现在第一次失败就把这条路关掉。
  */
+let onlineFileUnsupported = false;
 async function receiveOnlineFile(meta, spec) {
+  if (onlineFileUnsupported) return null;
   if (meta.isGroup) return null;
   const uid = Number(meta.uid) || 0;
   if (!uid || !spec.msgId || !spec.elementId) return null;
@@ -853,7 +940,10 @@ async function receiveOnlineFile(meta, spec) {
       user_id: String(uid), msg_id: String(spec.msgId), element_id: String(spec.elementId),
     }, 20000);
   } catch (e) {
-    note('debug', `[文件] receive_online_file 失败：${e.message}`);
+    // 协议端不认识这个 action：以后别再来一次，省得每个文件都白等十几秒
+    onlineFileUnsupported = true;
+    note('info', `[文件] 协议端不支持在线文件接口，改用直链下载：${String(e.message || '').slice(0, 80)}`);
+    return null;
   }
   const deadline = Date.now() + TEMP_SCAN_MS;
   while (Date.now() < deadline) {
@@ -865,20 +955,42 @@ async function receiveOnlineFile(meta, spec) {
 }
 
 /**
- * 兜底：段里只有 file_id 时，让 NapCat 去下（get_file），再按挂载关系换成宿主路径。
- * 实测 get_file 的 file 参数给文件名会 retcode 1200 超时，给 file_id 才靠谱。
+ * 用 file_id 换直链再下。2026-10-28 换 SnowLuma 底座：
+ * get_file 只认图片/语音缓存里的 id，群文件和私聊文件一律 failed/100，
+ * 原话是「for group/normal files use get_group_file_url or get_private_file_url」。
+ * 所以这里改走那两个接口——私聊还要带 file_hash，缺了它取不到。
  */
-async function fetchFileViaGetFile(spec) {
+async function fetchFileViaUrlApi(spec, meta) {
   const id = String(spec.fileId || '');
   if (!id) return null;
+  const m = /^(private|group):(\d+)$/.exec(String(meta.chatKey || ''));
+  const isGroup = String(meta.chatKey || '').startsWith('group:');
+  const peer = m ? Number(m[2]) : 0;
+  let url = '';
   try {
-    const info = await ob.call('get_file', { file_id: id }, 30000);
+    if (isGroup && peer) {
+      const r = await ob.call('get_group_file_url', { group_id: peer, file_id: id }, 30000);
+      url = r?.url || '';
+    } else if (peer) {
+      const r = await ob.call('get_private_file_url', {
+        user_id: Number(meta.uid) || peer, file_id: id, file_hash: String(spec.fileHash || ''),
+      }, 30000);
+      url = r?.url || '';
+    }
+  } catch (e) {
+    note('debug', `[文件] 取直链失败：${e.message}`);
+  }
+  if (url) {
+    const got = await downloadFile(url, filesDir, spec.name);
+    if (got) return got;
+  }
+  // 老 NapCat 上 get_file 还管用，留着当最后一道
+  try {
+    const info = await ob.call('get_file', { file_id: id }, 15000);
     const host = toHostQQPath(info?.file || info?.url || '');
     if (host && fs.existsSync(host)) return { file: host, size: fs.statSync(host).size };
-  } catch (e) {
-    note('debug', `[文件] get_file 失败：${e.message}`);
-  }
-  return findNewestInTempDir(spec.name, Date.now() - 60000);
+  } catch { /* SnowLuma 上必然失败，不用记日志 */ }
+  return null;
 }
 
 /** 把一个 file 段变成「本地已有这个文件」；哪条路都走不通就返回 null。 */
@@ -896,10 +1008,13 @@ async function materializeFile(spec, meta) {
       if (got) return got;
     }
   }
-  // 3) 有 file_id：走 get_file
-  const viaId = await fetchFileViaGetFile(spec);
+  // 3) 有 file_id：用协议端的接口换直链再下
+  const viaId = await fetchFileViaUrlApi(spec, meta);
   if (viaId) {
-    const got = copyLocalFile(viaId.file, filesDir, spec.name || path.basename(viaId.file));
+    // 这条路上拿到的已经是 filesDir 里的成品，或者一个宿主路径，都按本地文件收
+    const got = path.dirname(viaId.file) === filesDir
+      ? { file: viaId.file, size: viaId.size }
+      : copyLocalFile(viaId.file, filesDir, spec.name || path.basename(viaId.file));
     if (got) return got;
   }
   return null;
@@ -923,6 +1038,13 @@ async function resolveFiles(text, files, trusted, meta = {}) {
     }
     const rel = path.relative(cfg.agentCwd, got.file).replace(/\\/g, '/');
     note('info', `[${meta.chatKey || '?'}] 收到文件 ${spec.name || path.basename(got.file)} → ${rel}（${humanSize(got.size)}）`);
+    // 记一笔「这个会话最近收到的文件」：用户经常先甩文件、再补一句「用本机把它…」，
+    // 两条消息分开到，得能对上（2026-10-28）。
+    try {
+      if (meta.chatKey) {
+        rememberLocalInput(cfg, meta.chatKey, { path: got.file, name: spec.name || path.basename(got.file) });
+      }
+    } catch { /* 记不上不影响这一轮 */ }
     const preview = textPreview(got.file);
     if (preview) {
       out = out.replace(`[[FILE:${i}]]`,
@@ -1000,6 +1122,46 @@ function wakeBoostState(session, atMe) {
 }
 
 /* ---------- 发送 ---------- */
+
+/** 出站闸取数①：不该出现在聊天里的 QQ 号。
+ *  主人、余额播报对象、私聊白名单里的熟人；只认 5~12 位数字，且排除她自己
+ *  （把她自己的号打码，看起来就像故障，而且她自己报号是正常行为）。 */
+function protectedIds() {
+  const out = [];
+  const push = (v) => {
+    const s = String(v ?? '').trim();
+    if (!/^\d{5,12}$/.test(s)) return;
+    if (!out.includes(s)) out.push(s);
+  };
+  for (const uid of cfg.raw?.persona?.ownerUids ?? []) push(uid);
+  // balance 的默认配置在 balance.mjs，raw 里没有这一项时 notifyQQ 就是 0（正则会挡掉）
+  push(cfg.raw?.balance?.notifyQQ ?? cfg.balance?.notifyQQ);
+  const allow = cfg.privateAllow;
+  if (allow instanceof Set || Array.isArray(allow)) for (const uid of allow) push(uid);
+  const selfId = String(state.self?.user_id ?? '');
+  return out.filter((id) => id !== selfId);
+}
+
+/** 出站闸取数②：出站不许出现的令牌原文。
+ *  只收真正在用/曾用过的 key（环境变量 + 凭证文件）；太短的（<12）不认，
+ *  否则会把正常词句当令牌整段换掉。 */
+function outboundTokens() {
+  const out = [];
+  const push = (v) => {
+    const t = String(v ?? '').trim();
+    if (t.length < 12) return;
+    if (!out.includes(t)) out.push(t);
+  };
+  push(process.env.DEEPSEEK_API_KEY);
+  push(process.env.RELAY_API_KEY);
+  push(process.env.DEEPSEEK_OFFICIAL_KEY);
+  push(cfg.raw?.napcat?.token);
+  for (const name of ['DEEPSEEK_API_KEY', 'DEEPSEEK_OFFICIAL_KEY']) {
+    try { push(readCredential(name)); } catch { /* 取不到就跳过 */ }
+  }
+  return out;
+}
+
 function toSegments(text, quoteId, isGroup, quote = false) {
   const segs = [];
   // 2026-10-26 用户要求：别每句都引用——只有这句真的指代不清、模型主动写了 __QUOTE__ 时才挂引用。
@@ -1015,7 +1177,14 @@ async function sendText(session, text, quoteId, { quote = false, atUid = 0, long
   // 2026-10-25：模型把自己的权衡/计划写进 final 文本，22:14 那条 112 字里只有最后一句该发。
   // 先剥思考片段，再剥畸形指令行（指令行写成 __SEND-STICKER--S4 那次）。
   const thoughtless = stripThinkingLeak(text);
-  const safe = scrubDirectiveLeaks(thoughtless);
+  // 2026-10-28：先剥指令泄漏，再走一遍出站闸（本机路径 / 已知令牌原文 / 凭据赋值 / 受保护的号），最后才转义 CQ 码。
+  // 分级打码而不是整条拦：她突然哑掉比说漏一句更像故障。
+  const scrubbed = scrubDirectiveLeaks(thoughtless);
+  const outbound = auditOutbound(scrubbed, { ids: protectedIds(), tokens: outboundTokens() });
+  if (outbound.hits.length) {
+    note('warn', `[出站] 打码 ${outbound.hits.length} 处：${outbound.hits.map((h) => h.kind).join('/')}`);
+  }
+  const safe = escapeCq(outbound.text);
   if (thoughtless !== text) {
     note('warn', `[思考] 剥掉自述片段：${String(text).length}字 → ${thoughtless.length}字`);
   }
@@ -1214,8 +1383,252 @@ async function sendStickerToCurrent(session, ref) {
   note('info', `[${session.key}] 发表情 #${idx}（${seg.type}）`);
 }
 
-/** §16.3 打标驱动：每轮最多一张，放在回复之后跑，不阻塞对话 */
-async function tagPendingMemes(sessionKey = '') {
+/* ---------- 自己的形象图（2026-10-28）：__SELFIE__ ---------- */
+// 被问到「你长什么样」「发张自拍」，或者她自己想露个脸时，单独输出一行 __SELFIE__，
+// 桥把 workspace/self/self.png 发出去。图是她 QQ 那头像 640 版，换了头像重新拉一次就行。
+function selfImagePath() {
+  return path.join(cfg.agentCwd, 'workspace', 'self', 'self.png');
+}
+
+function extractSelfieDirective(text) {
+  let hit = false;
+  const kept = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.trim().replace(/^[（(]|[）)]$/g, '');
+    if (/^_{0,2}(SELFIE|SEND[-_ ]*SELF[-_ ]*IMAGE)_{0,2}$/i.test(t)) { hit = true; continue; }
+    kept.push(line);
+  }
+  return { hit, rest: kept.join('\n') };
+}
+
+async function sendSelfImage(session) {
+  const file = selfImagePath();
+  if (!fs.existsSync(file)) throw new Error('形象图还没准备');
+  const b64 = fs.readFileSync(file).toString('base64');
+  const seg = { type: 'image', data: { file: `base64://${b64}`, summary: '溟月的样子' } };
+  if (session.kind === 'group') await ob.sendGroup(session.id, [seg]);
+  else await ob.sendPrivate(session.id, [seg]);
+  note('info', `[${session.key}] 发自己的形象图`);
+}
+
+/* ---------- 她自己记 / 查 / 删记忆，和黑话库（2026-10-28） ---------- */
+const MEM_OPS = ['append', 'add', 'query', 'search', 'remove', 'delete', 'del', 'clear'];
+const SLANG_OPS = ['query', 'search', 'submit', 'add'];
+
+/** 摘出 __MEMORY__ / __SLANG__ 这类独占行的指令，行本身不发成文字 */
+function extractToolDirective(text, tag, ops) {
+  const found = [];
+  const kept = [];
+  const head = new RegExp(`^_{0,2}${tag}_{0,2}[:\\s]+(\\S+)\\s*([\\s\\S]*)$`, 'i');
+  const bare = new RegExp(`^_{0,2}${tag}_{0,2}\\s*$`, 'i');
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.trim();
+    const m = t.match(head);
+    if (m && ops.includes(m[1].toLowerCase())) {
+      found.push({ op: m[1].toLowerCase(), arg: m[2].trim() });
+      continue;
+    }
+    if (bare.test(t)) continue;
+    kept.push(line);
+  }
+  return { found, rest: kept.join('\n') };
+}
+
+/** 私聊记在 self，群聊记在该群 —— 跟自动学记忆用同一套 scope */
+function memoryScopeOf(session) {
+  return session.key.startsWith('group:') ? session.key : 'self';
+}
+
+async function applyToolDirectives(session, mem, slang) {
+  const scope = memoryScopeOf(session);
+  const out = [];
+  for (const { op, arg } of mem.found) {
+    if (op === 'append' || op === 'add') {
+      const r = appendMemory(cfg.agentCwd, scope, arg);
+      out.push(r.ok ? `记住了：${r.text}` : `没记上：${r.err}`);
+    } else if (op === 'query' || op === 'search') {
+      const rows = queryMemory(cfg.agentCwd, scope, arg);
+      out.push(rows.length
+        ? `记着的：\n${rows.slice(0, 8).map((r) => `· ${r.text}`).join('\n')}`
+        : `这边没记过${arg ? `「${arg}」` : ''}。`);
+    } else if (op === 'remove' || op === 'delete' || op === 'del') {
+      const r = removeMemory(cfg.agentCwd, scope, arg);
+      out.push(r.ok ? `删掉了：${r.removed}` : `没删成：${r.err}`);
+    } else if (op === 'clear') {
+      const r = clearMemory(cfg.agentCwd, scope);
+      out.push(`清掉了 ${r.removed} 条`);
+    }
+  }
+  for (const { op, arg } of slang.found) {
+    if (op === 'query' || op === 'search') {
+      const rows = querySlang(cfg, arg);
+      out.push(rows.length
+        ? `这么叫的：\n${rows.map((e) => `· ${e.word}=${e.meaning}`).join('\n')}`
+        : `「${arg}」我还没学会。`);
+    } else {
+      const eq = arg.indexOf('=');
+      const word = eq > 0 ? arg.slice(0, eq).trim() : arg.trim();
+      const meaning = eq > 0 ? arg.slice(eq + 1).trim() : '';
+      const r = submitSlang(cfg, { word, meaning, by: session.title || '', chatKey: session.key });
+      out.push(r.ok ? `提报了「${r.word}」，等主人过目` : `没提成：${r.err}`);
+    }
+  }
+  if (out.length) session.toolReplies = [...(session.toolReplies || []), ...out];
+}
+
+/* ---------- 表情收录 / 改说明 / 收意见（2026-10-28，对齐 surfcore 的 qq_collect_sticker 那组） ---------- */
+
+/** __COLLECT_STICKER__ #3 —— 把本会话第 3 张素材收进共享图库 */
+function parseCollectDirective(text) {
+  const list = [];
+  const kept = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.trim();
+    const m = t.match(/^_{0,2}COLLECT_STICKER_{0,2}[:\s]+#?(\d+)\s*$/i);
+    if (m) { list.push(Number(m[1])); continue; }
+    kept.push(line);
+  }
+  return { list, rest: kept.join('\n') };
+}
+
+/** __STICKER_REMARK__ S3 侧目嫌弃挥手 —— 改共享图库里那条的说明 */
+function parseRemarkDirective(text) {
+  const list = [];
+  const kept = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.trim();
+    const m = t.match(/^_{0,2}STICKER_REMARK_{0,2}[:\s]+S(\d+)\s+([\s\S]+)$/i);
+    if (m) { list.push({ index: Number(m[1]), remark: m[2].trim() }); continue; }
+    kept.push(line);
+  }
+  return { list, rest: kept.join('\n') };
+}
+
+/** __FEEDBACK__ 内容 —— 她对这套东西的意见，攒到 data/feedback.jsonl 等号主看 */
+function parseFeedbackDirective(text) {
+  const list = [];
+  const kept = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.trim();
+    const m = t.match(/^_{0,2}FEEDBACK_{0,2}[:\s]+([\s\S]+)$/i);
+    if (m) { list.push(m[1].trim()); continue; }
+    kept.push(line);
+  }
+  return { list, rest: kept.join('\n') };
+}
+
+/** 共享图库的池子：和挑图时同一套过滤与顺序，S 编号就是这里的下标 */
+function sharedPoolNow() {
+  const usage = loadUsage(cfg.dataDir);
+  const now = Date.now();
+  const freshWindowMs = Number(cfg.raw.stickers?.freshWindowMs) || 25 * 60000;
+  return pickFresh(uniqueRows(readJsonl(SHARED_FILE, 2000), stickerKeyOf), usage, now, freshWindowMs);
+}
+
+/** 收录 + 改说明 + 收意见，结果攒进 toolReplies 最后补发 */
+async function applyStickerFeedback(session, collects, remarks, feedbacks) {
+  const out = [];
+  for (const idx of collects) {
+    const src = path.join(stashDir, `${safeFileName(session.key)}.jsonl`);
+    const rows = readJsonl(src, 400);
+    const rec = rows[idx];
+    if (!rec) { out.push(`没收到 #${idx}（这个会话一共 ${rows.length} 张）`); continue; }
+    const from = resolveStickerPath(rec, stashDir);
+    if (!from) { out.push(`#${idx} 那张图找不到文件`); continue; }
+    const dir = path.join(stashDir, 'collected');
+    fs.mkdirSync(dir, { recursive: true });
+    const ext = path.extname(from) || '.jpg';
+    const name = `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}${ext}`;
+    const to = path.join(dir, name);
+    try { fs.copyFileSync(from, to); } catch (e) { out.push(`复制失败：${e.message}`); continue; }
+    const summary = stickerLabel(rec) || '';
+    const row = {
+      t: new Date().toISOString(),
+      uid: 0,
+      name: '溟月收的',
+      seg: { type: 'image', data: { summary } },
+      file: `collected/${name}`,
+      local: to,
+      tag: 'collected',
+    };
+    try { fs.appendFileSync(SHARED_FILE, `${JSON.stringify(row)}\n`, 'utf-8'); } catch (e) { out.push(`登记失败：${e.message}`); continue; }
+    out.push(`收进图库了：#${idx}${summary ? `（${summary}）` : ''}`);
+  }
+  for (const { index, remark } of remarks) {
+    const pool = sharedPoolNow();
+    const row = pool[index];
+    if (!row) { out.push(`图库里没有 S${index}（这轮池子 ${pool.length} 张）`); continue; }
+    try {
+      const all = readJsonl(SHARED_FILE, 4000);
+      const hit = all.find((r) => stickerKeyOf(r) === row.key);
+      if (!hit) { out.push(`S${index} 已经不在库里了`); continue; }
+      hit.seg = hit.seg || { type: 'image', data: {} };
+      hit.seg.data = hit.seg.data || {};
+      hit.seg.data.summary = remark.slice(0, 60);
+      fs.writeFileSync(SHARED_FILE, `${all.map((r) => JSON.stringify(r)).join('\n')}\n`, 'utf-8');
+      out.push(`S${index} 的说明改成「${remark.slice(0, 20)}」了`);
+    } catch (e) { out.push(`没改成：${e.message}`); }
+  }
+  for (const text of feedbacks) {
+    try {
+      fs.appendFileSync(
+        path.join(cfg.dataDir, 'feedback.jsonl'),
+        `${JSON.stringify({ t: new Date().toISOString(), key: session.key, who: session.title || '', text: text.slice(0, 300) })}\n`,
+        'utf-8',
+      );
+      out.push('行，这个我回头细看');
+    } catch (e) { out.push(`没记上：${e.message}`); }
+  }
+  if (out.length) session.toolReplies = [...(session.toolReplies || []), ...out];
+}
+
+/** 正文发完之后再补这些结果，免得打乱她自己的节奏 */
+async function flushToolReplies(session) {
+  const list = session.toolReplies || [];
+  if (!list.length) return;
+  session.toolReplies = [];
+  for (const text of list) {
+    try { await sendText(session, text, null); } catch (e) { note('warn', `[${session.key}] 工具结果没发出去：${e.message}`); }
+    await sleep(300);
+  }
+}
+
+/* ---------- 她自己定唤醒（2026-10-28）：__WAKE__ off 120 / __WAKE__ on ---------- */
+function extractWakeDirective(text) {
+  let set = null;
+  const kept = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.trim().replace(/^[（(]|[）)]$/g, '');
+    const m = t.match(/^_{0,2}WAKE_{0,2}[:\s]+(off|on|mute|awake)(?:\s+(\d+))?$/i);
+    if (m) {
+      const mode = m[1].toLowerCase();
+      const off = mode === 'off' || mode === 'mute';
+      set = { off, minutes: m[2] ? Math.min(720, Math.max(1, Number(m[2]))) : 60 };
+      continue;
+    }
+    kept.push(line);
+  }
+  return { set, rest: kept.join('\n') };
+}
+
+/** 她自己要安静一会儿：所有「没人说话也主动开口」的路都要看这个 */
+function wakeMuted() {
+  return (Number(state.wakeOffUntil) || 0) > Date.now();
+}
+
+function applyWake(session, wk) {
+  if (!wk?.set) return;
+  if (wk.set.off) {
+    state.wakeOffUntil = Date.now() + wk.set.minutes * 60000;
+    note('info', `[${session.key}] 她自己要安静 ${wk.set.minutes} 分钟`);
+  } else {
+    state.wakeOffUntil = 0;
+    note('info', `[${session.key}] 她自己恢复清醒`);
+  }
+  try { purposeSetMuted(state.wakeOffUntil); } catch { /* purpose 没加载就算了 */ }
+}
+
+/** §16.3 打标驱动：每轮最多一张，放在回复之后跑，不阻塞对话 */async function tagPendingMemes(sessionKey = '') {
   const hub = memeHubConfig(cfg);
   if (!hub.enabled) return;
   const jobs = takeTagJobs(cfg, 1);
@@ -1396,7 +1809,7 @@ async function sendOneVoice(session, text, { mood, scene, emotion, intensity } =
   }
 
   const name = path.basename(out.file);
-  const seg = { type: 'record', data: { file: `${v.containerDir || '/app/voice'}/${name}` } };
+  const seg = { type: 'record', data: { file: `${v.containerDir || '/app/data/voice'}/${name}` } };
   if (session.kind === 'group') await ob.sendGroup(session.id, [seg]);
   else await ob.sendPrivate(session.id, [seg]);
 
@@ -1405,7 +1818,7 @@ async function sendOneVoice(session, text, { mood, scene, emotion, intensity } =
 
   // 只留最近 30 个音频文件，别把盘塞满
   try {
-    const dir = v.dir || '/root/napcat/data/voice';
+    const dir = v.dir || '/root/snowluma/data/voice';
     const files = fs.readdirSync(dir).filter((f) => f.startsWith('v-')).sort();
     for (const f of files.slice(0, Math.max(0, files.length - 30))) {
       fs.unlinkSync(path.join(dir, f));
@@ -1855,13 +2268,29 @@ async function runDirectives(session, dir, { last, profiles, batchText = '', rec
     }
   }
 
+  const ADMIN_MIN_LEVEL = { title: 6, notice: 6, mute: 7, unmute: 7, set_admin: 7 };
+  const actorLevel = isOwner ? 8 : levelOf(qualifiedFavor(actionFavor), false);
   for (const op of dir.admin) {
     const adminKind = String(op?.op || '').toLowerCase();
-    // 2026-10-27 用户要求：群管她自己也能判。号主发话全照办；
-    // 号主没发话时只放行「撤回」这一种，禁言/改名还是要号主点头（admin.mjs 里再兜一层）。
-    if (!isOwner && adminKind !== 'recall' && adminKind !== 'recall_last') {
-      note('warn', `[${session.key}] 非号主触发群管理 ${adminKind}，拒绝：${JSON.stringify(op)}`);
-      continue;
+    // 2026-10-28 用户定档位：六档能用头衔和群公告，七档解锁禁言和设管理，踢人只有主人能下。
+    // 撤回和点赞这两种她一直可以自己来（like 只是加个表情回应，动不了人）。
+    const selfServe = adminKind === 'recall' || adminKind === 'recall_last' || adminKind === 'like';
+    if (!isOwner) {
+      const need = ADMIN_MIN_LEVEL[adminKind] || 0;
+      if (adminKind === 'kick') {
+        note('warn', `[${session.key}] 非号主要踢人，拒绝：${JSON.stringify(op)}`);
+        problems.push('踢人这事只有主人能下');
+        continue;
+      }
+      if (need && actorLevel < need) {
+        note('info', `[${session.key}] 群管理 ${adminKind} 档位不够（第${actorLevel}档 < ${need}）`);
+        problems.push('这个得等关系再近些');
+        continue;
+      }
+      if (!selfServe && !need) {
+        note('warn', `[${session.key}] 非号主触发群管理 ${adminKind}，拒绝：${JSON.stringify(op)}`);
+        continue;
+      }
     }
     if (session.kind !== 'group') {
       note('warn', `[${session.key}] 私聊里没有群管理可做`);
@@ -1876,6 +2305,7 @@ async function runDirectives(session, dir, { last, profiles, batchText = '', rec
       lastBotMsgId: session.lastBotMsgId,
       actorIsOwner: isOwner,
       actorUid: senderUid,
+      actorLevel,
       recent,
       favorOfUid: (uid) => {
         const pr = session.profiles ?? (session.profiles = loadProfiles(cfg.agentCwd, session.key));
@@ -2001,6 +2431,8 @@ const MEDIA_FAVOR = () => Number(FAVOR_TH().media ?? cfg.raw.agent?.mediaFavor ?
 const NOTEBOOK_FAVOR = () => Number(FAVOR_TH().notebook ?? cfg.raw.agent?.notebookFavor ?? FAVOR.obey);
 const ABOUT_FAVOR = () => Number(FAVOR_TH().about ?? cfg.raw.agent?.aboutFavor ?? FAVOR.obey);
 const STRICT_FAVOR = () => Number(FAVOR_TH().strict ?? cfg.raw.agent?.strictFavor ?? FAVOR.obey);
+// 本机干活（2026-10-28）：这是「借号主电脑跑东西」，门槛比普通工作项高，默认跟点歌一档。
+const LOCAL_FAVOR = () => Number(FAVOR_TH().local ?? cfg.raw.agent?.localFavor ?? FAVOR.obey);
 
 /** 这个人的好感够不够（号主永远够） */
 function favorOk(session, uid, name, need, { isOwner = false } = {}) {
@@ -2336,7 +2768,7 @@ async function handleBatch(session, batch) {
   }
   const cmdLine = hashLine || singCmd;
   if (cmdLine) {
-    const FIXED_COMMANDS = ['好感度', '心情', '同步', '翻唱', '清唱'];
+    const FIXED_COMMANDS = ['好感度', '心情', '同步', '翻唱', '清唱', '本机', '语音库', '点播'];
     const hashParsed = matchCommandLine(cmdLine) || {};
     let hashName = hashParsed.name || '';
     let hashExtra = String(hashParsed.extra || '');
@@ -2413,6 +2845,42 @@ async function handleBatch(session, batch) {
         note('info', `[${session.key}] 心情查询：${last.name}`);
         return;
       }
+      if (hashName === '语音库') {
+        session.forceReplyUntil = 0;
+        const items = await listVoices();
+        if (!items.length) {
+          const why = voicesError();
+          await sendText(session, why ? `本机那边没连上，库里拿不到（${why}）` : '库里一首都没有，本机那个目录是空的', null);
+          return;
+        }
+        const lines = items.slice(0, 40).map((it, i) => `${i + 1}. ${it.name.replace(/\.[^.]+$/, '')}`);
+        const more = items.length > 40 ? `\n…还有 ${items.length - 40} 首` : '';
+        await sendText(session, `本机存了 ${items.length} 首：\n${lines.join('\n')}${more}`, null);
+        note('info', `[${session.key}] 语音库清单：${items.length} 首`);
+        return;
+      }
+      if (hashName === '点播') {
+        session.forceReplyUntil = 0;
+        const target = await pickVoice(hashExtra);
+        if (!target) {
+          await sendText(session, '没找到这首，说个序号或者名字里的一截', null);
+          return;
+        }
+        const got = await ensureRemote(target.name);
+        if (!got.ok) {
+          await sendText(session, '文件没推上来，卡在本机那头了', null);
+          note('warn', `[${session.key}] 点播推送失败 ${target.name}：${got.msg}`);
+          return;
+        }
+        try {
+          const sent = await sendFileToChat({ ob, cfg, chat: session.key, filePath: got.path, name: target.name });
+          note('info', `[${session.key}] 点播 ${target.name}（${humanSize(sent.bytes)}）`);
+        } catch (e) {
+          await sendText(session, `推上来了但发不出去：${String(e.message).slice(0, 50)}`, null);
+          note('warn', `[${session.key}] 点播发送失败 ${target.name}：${e.message}`);
+        }
+        return;
+      }
       if (hashName === '翻唱' || hashName === '清唱') {
         session.forceReplyUntil = 0;
         const accapella = hashName === '清唱';
@@ -2470,6 +2938,35 @@ async function handleBatch(session, batch) {
         // 在线回话：随机拼一句「马上要唱」的话（不写死整句），也不提排队、不提要跑多久
         await sendText(session, `${pickOnlineReply(word, { full: segment === null })}${tuned ? `（${tuned}）` : ''}`, null);
         note('info', `[${session.key}] ${word}排队：《${song}》任务 ${job.id}（执行器在线）`);
+        return;
+      }
+      if (hashName === '本机') {
+        // 2026-10-28 用户要：「传输文件用本机 dsh 操作后再发回」。
+        // 用法：#本机 <要干什么>；前面刚发过文件就自动拿那个文件当输入。
+        session.forceReplyUntil = 0;
+        const task = String(hashExtra || '').trim();
+        if (!task) {
+          await sendText(session, '用法：#本机 要干什么（先发文件的话，我自己拿它当输入）', null);
+          return;
+        }
+        if (!canActOnMe && fx.favor < LOCAL_FAVOR()) {
+          await sendText(session, `这个得等好感 ${LOCAL_FAVOR()} 以上（现在 ${fx.favor}）`, null);
+          note('info', `[${session.key}] #本机 被好感门槛拦下：${fx.favor} < ${LOCAL_FAVOR()}`);
+          return;
+        }
+        // 本机在不在：跟翻唱一样先看心跳，不在就不排，免得活躺在队列里等不到人
+        const aliveLocal = localExecutorOnline(cfg);
+        if (!aliveLocal.online) {
+          await sendText(session, pickLocalMissReply(), null);
+          note('info', `[${session.key}] #本机 被拦下：执行器不在线（心跳 ${aliveLocal.ts || '没有'}）`);
+          return;
+        }
+        const recentFile = lastLocalInput(cfg, session.key);
+        const job = enqueueLocal(cfg, {
+          task, chat: session.key, by: Number(last.uid), file: recentFile,
+        });
+        await sendText(session, pickLocalOkReply(), null);
+        note('info', `[${session.key}] 本机活排队：${task.slice(0, 40)}（任务 ${job.id}${recentFile ? `，带文件 ${recentFile.name}` : '，无文件'}，队列 ${localQueueDepth(cfg)}）`);
         return;
       }
       if (hashName === '同步') {
@@ -2995,9 +3492,21 @@ async function handleBatch(session, batch) {
 
   // 4. 调用模型
   const prepMs = Date.now() - startedAt;
+  // 2026-10-28：跑模型这段时间亮「正在输入」，跑完收掉。私聊报对方、
+  // 群里报自己 + 群号；一律 fire-and-forget，绝不因为它多等一个来回。
+  const typingTarget = cfg.raw.reply?.typing === false
+    ? null
+    : (session.kind === 'group'
+      ? { userId: state.self?.user_id || 0, groupId: session.id }
+      : { userId: Number(session.id) || 0 });
+  const typing = (eventType) => {
+    if (!typingTarget?.userId) return;
+    void ob.setInputStatus({ ...typingTarget, eventType }).catch(() => {});
+  };
   await sem.acquire();
   let result;
   try {
+    typing(1);
     // 2026-10-27 用户要求「聊天时不再禁用任何插件和工具」：工具全开，能不能动手
     // 改东西按信任级别给——可信的写 workspace，其他人只读。
     result = await runner.run({
@@ -3008,6 +3517,7 @@ async function handleBatch(session, batch) {
         : { permissionMode: trusted ? 'workspace-write' : 'read-only' }),
     });
   } finally {
+    typing(2);
     sem.release();
   }
 
@@ -3127,12 +3637,32 @@ async function handleBatch(session, batch) {
   const afterVoice = vc ? vc.rest : textAfter;
   const md = parseMediaDirective(afterVoice.trim());
   const st = extractStickerDirective(afterVoice);
+  // 自己的形象图（2026-10-28）：__SELFIE__ 独占一行，先摘出来
+  const sf = extractSelfieDirective(st ? st.rest : afterVoice);
+  // 她自己定唤醒（2026-10-28）：__WAKE__ off 120 / __WAKE__ on
+  const wk = extractWakeDirective(sf.rest);
+  applyWake(session, wk);
+  // 记忆与黑话（2026-10-28）：__MEMORY__ append/query/remove/clear、__SLANG__ query/submit
+  const ml = extractToolDirective(wk.rest, 'MEMORY', MEM_OPS);
+  const sll = extractToolDirective(ml.rest, 'SLANG', SLANG_OPS);
+  applyToolDirectives(session, ml, sll);
+  const baseAfterWake = sll.rest;
   // 戳一戳（2026-10-28）：__POKE__ 独占一行，先摘出来，行本身不发成文字
   const pk = extractPokeDirective(
-    st ? st.rest : afterVoice,
+    baseAfterWake,
     [...batch, ...(session.recentContext || [])].map((m) => ({ uid: m.uid, name: m.name })),
   );
-  const bodyRaw = pk ? pk.rest : (st ? st.rest : afterVoice);
+  // 发文件（2026-10-28）：__SEND_FILE__ <路径> 也独占一行。
+  // 只放行工作区和数据目录底下的文件——模型不该有能力把 /etc/passwd 甩给对面。
+  const mdFile = extractFileDirective(pk ? pk.rest : baseAfterWake, {
+    roots: [cfg.agentCwd, cfg.dataDir, cfg.raw.voice?.dir || '/root/snowluma/data/voice'],
+  });
+  // 表情收录/改说明/收意见（2026-10-28）：__COLLECT_STICKER__ #3 / __STICKER_REMARK__ S3 说明 / __FEEDBACK__ 内容
+  const cs = parseCollectDirective(mdFile.rest);
+  const sr = parseRemarkDirective(cs.rest);
+  const fb = parseFeedbackDirective(sr.rest);
+  await applyStickerFeedback(session, cs.list, sr.list, fb.list);
+  const bodyRaw = fb.rest;
   // 2026-10-27 用户定：以【溟月】身份说的对话内容走短文本规则；引用资料、检索到的长文本、
   // 对方点名要模仿的长文句式这类「不是她临场说的话」，在正文最前面单独一行写 __LONG__，
   // 桥就不再按 16 字/40~90 字去断它，整条当作长文发出去。
@@ -3147,7 +3677,21 @@ async function handleBatch(session, batch) {
       .filter(Boolean);
   // 一条长回复在逗号处断成两条：persona 承诺过「超过 40 字桥替你断开」，这里真兑现（2026-10-26）。
   // 阈值可用 config.reply.autoSplitLongChars 调，给 0 就关掉。
-  const parts = longForm ? splitParts : autoSplitLong(splitParts, { limit: cfg.raw.reply.autoSplitLongChars ?? 40 });
+  let parts = longForm ? splitParts : autoSplitLong(splitParts, { limit: cfg.raw.reply.autoSplitLongChars ?? 40 });
+  // 静默标记本身永远不该进对话（2026-10-28 用户指出私聊里漏出过字面 <SKIP>）。
+  // 前面只在「整段以标记开头」时才判沉默，她把标记包成反引号、全角括号或者夹在别的句子里就漏了。
+  // 这里逐片再筛一遍：剥掉包裹符号后只剩 SKIP 的整片丢掉；全丢光就当这轮沉默。
+  const stripSilence = (s) =>
+    String(s || '')
+      .replace(/[`'"“”‘’「」『』()（）[\]【】<>＜＞]*\s*SKIP\s*[`'"“”‘’「」『』()（）[\]【】<>＜＞]*/gi, '')
+      .trim();
+  parts = parts.map(stripSilence).filter(Boolean);
+  if (!parts.length) {
+    state.stats.skipped++;
+    note('info', `[${session.key}] 只有静默标记，没有可发的内容（${elapsed}ms）`);
+    audit(session, batch, null, 'silent', elapsed, result.usage);
+    return;
+  }
   const clean = parts.join('\n');
 
   try {
@@ -3174,7 +3718,7 @@ async function handleBatch(session, batch) {
       return;
     }
 
-    if (!parts.length && !st && !vc && !pk) {
+    if (!parts.length && !st && !vc && !pk && !mdFile.paths.length && !sf.hit) {
       if (!directive.did) { state.stats.skipped++; return; }
       // 只做了事、没说话（比如默默设了提醒）：算一次回复，冷却和限流也该生效
       state.stats.replied++;
@@ -3193,6 +3737,14 @@ async function handleBatch(session, batch) {
     session.lastReplyAt = Date.now();
     session.replyTimes.push(Date.now());
     globalReplyTimes.push(Date.now());
+
+    await flushToolReplies(session);
+
+    // 她要在说话之前先露个脸（__SELFIE__）
+    if (sf.hit) {
+      try { await sendSelfImage(session); } catch (e) { note('warn', `[${session.key}] 发形象图失败：${e.message}`); }
+      await sleep(400);
+    }
 
     for (let i = 0; i < parts.length; i++) {
       await sendText(session, parts[i], i === 0 ? last.messageId : null, { quote: dir.quote, longForm });
@@ -3234,6 +3786,20 @@ async function handleBatch(session, batch) {
       }
     }
     void tagPendingMemes(session.key).catch(() => {});
+    // 发文件（2026-10-28）：__SEND_FILE__ 一条一行，按行发。发失败只记日志、不打断后面的。
+    if (mdFile.paths.length) {
+      for (const fp of mdFile.paths) {
+        try {
+          const sent = await sendFileToChat({
+            ob, cfg, chat: session.key, filePath: fp, name: path.basename(fp),
+          });
+          note('info', `[${session.key}] 发文件 ${sent.name}（${humanSize(sent.bytes)}）`);
+        } catch (e) {
+          note('warn', `[${session.key}] 发文件失败 ${fp}：${e.message}`);
+          await sendText(session, `那个文件发不出去：${String(e.message).slice(0, 60)}`, null).catch(() => {});
+        }
+      }
+    }
     // 戳一戳（2026-10-28）：模型想戳就戳，同会话一分钟最多一次
     if (pk) {
       try {
@@ -3277,7 +3843,7 @@ async function handleBatch(session, batch) {
 
     const modelMs = Number(result?.elapsed) || 0;
     const doneMs = Date.now() - startedAt;
-    note('info', `[${session.key}] ${parts.length} 条 / ${clean.length} 字${st ? ` + 表情 ${st.ref}` : ''}${vc ? ' + 语音' : ''}${dir.count ? ` + 指令 ${dir.count}` : ''}（${doneMs}ms = 准备 ${prepMs} + 模型 ${modelMs} + 发送 ${Math.max(0, doneMs - prepMs - modelMs)}）`);
+    note('info', `[${session.key}] ${parts.length} 条 / ${clean.length} 字${st ? ` + 表情 ${st.ref}` : ''}${vc ? ' + 语音' : ''}${mdFile.paths.length ? ` + 文件 ${mdFile.paths.length}` : ''}${dir.count ? ` + 指令 ${dir.count}` : ''}（${doneMs}ms = 准备 ${prepMs} + 模型 ${modelMs} + 发送 ${Math.max(0, doneMs - prepMs - modelMs)}）`);
     audit(session, batch, `${parts.join(' / ')}${st ? ` + [表情 ${st.ref}]` : ''}${vc ? ` + [语音] ${vc.text.slice(0, 40)}` : ''}${dir.count ? ` + [指令 ${dir.count}]` : ''}`, 'replied', elapsed, result.usage);
   } catch (e) {
     state.stats.failed++;
@@ -3500,6 +4066,14 @@ async function runTurn(session) {
   try {
     while (session.buffer.length) {
       const batch = session.buffer.splice(0, session.buffer.length);
+      // 2026-10-28 用户要求接 SnowLuma 的拟人能力：进处理前先标已读，对面那个红点就消了。
+      // 只认数字 id（自己发出去的是 self-xxx），失败一律不管，不能因为标已读把回复卡住。
+      if (cfg.raw.reply?.readReceipt !== false) {
+        for (const m of batch) {
+          const mid = Number(m?.messageId);
+          if (Number.isFinite(mid) && mid > 0) void ob.markMsgAsRead(mid).catch(() => {});
+        }
+      }
       try {
         await handleBatch(session, batch);
       } catch (e) {
@@ -3794,9 +4368,52 @@ const selfwake = createSelfwake({
   canVoice: (session) => voiceGate(session, {}).ok,
   note,
   paused: () => state.paused,
+  // 她自己要安静（__WAKE__ off）时，谁都不许替她开口
+  canWake: () => !wakeMuted(),
   audit: (session, batch, reply, action, elapsed, usage) => audit(session, batch, reply, action, elapsed, usage),
+  // 开不开口由目的引擎决定：它排了一条「该说话」才开口，排不到就闭嘴
+  advisor: async () => {
+    if (cfg.purpose?.enabled === false) return null;
+    const p = purposeTakePending();
+    if (!p) return null;
+    const owner = cfg.persona?.ownerUids?.[0] || cfg.balance?.notifyQQ;
+    if (!owner) return null;
+    return {
+      sessionKey: `private:${owner}`,
+      hint: `${p.actionCn ? `${p.actionCn}：` : ''}${p.text || ''}`,
+      onSent: () => { try { purposeMarkSpoken(p.id); } catch { /* 记账失败不影响说话 */ } },
+    };
+  },
 });
 selfwake.start();
+
+// 早安排程：每天固定时间自己打个招呼（2026-10-28，照 surfcore 的 greeting-schedule 搬的）
+// 走 selfwake 的发送链路，所以语音/分条/表情那些规矩不用重写一遍。
+const greeting = createGreeting({
+  cfg,
+  note,
+  canWake: () => !wakeMuted(),
+  speak: async (hint) => {
+    const owner = cfg.persona?.ownerUids?.[0] || cfg.balance?.notifyQQ;
+    if (!owner) return { skipped: 'no-owner' };
+    const key = `private:${owner}`;
+    getSession(key, 'private', owner, '主人');
+    return selfwake.tick({ force: true, only: key, hint });
+  },
+});
+greeting.start();
+
+// 组件更新检查：SnowLuma 和 dsh 本体换代了不会有任何东西告诉我们，每天自己看一眼
+const updateCheck = createUpdateCheck({
+  cfg,
+  note,
+  notify: async (text) => {
+    const s = pickNotifyTarget();
+    if (!s) return;
+    await sendText(s, text);
+  },
+});
+updateCheck.start();
 
 // 定时提醒：到点自己发，不依赖 dsh 进程活着
 startReminderTicker({ cfg, note, send: fireReminder });
@@ -3875,6 +4492,15 @@ try {
   startCoverWatcher({ cfg, ob, note });
 } catch (e) {
   note('warn', `[翻唱] 监听没起来：${e.message}`);
+}
+
+// 本机干活回传（2026-10-28）：本机 tools/local-agent.py 拖着文件跑完 dsh，
+// 把产物传回 data/local/done，这里负责发回原会话。跟翻唱同一套拉模式。
+try {
+  ensureLocalDirs(cfg);
+  startLocalWatcher({ cfg, ob, note });
+} catch (e) {
+  note('warn', `[本机] 监听没起来：${e.message}`);
 }
 
 const control = startControl(cfg, {
@@ -3994,7 +4620,22 @@ const control = startControl(cfg, {
       history.append(chat, { t: Date.now(), role: 'bot', name: charName('我'), text });
       return { ok: true, op: 'text', chat, text };
     }
-    return { error: `不认识的 op：${op}（可用 voice / sticker / qzone / text）` };
+    if (op === 'file') {
+      // 本机那边把产物推回来之后，由一个外部小脚本喊一声「发出去」
+      // （2026-10-28）。path 只认工作区 / 数据目录 / 语音目录底下的。
+      const fp = String(body.path || '').trim();
+      if (!fp) return { error: 'path 不能为空' };
+      try {
+        const sent = await sendFileToChat({
+          ob, cfg, chat, filePath: fp, name: String(body.name || '').trim() || path.basename(fp),
+        });
+        note('info', `[action] op=file ${sent.name}（${humanSize(sent.bytes)}）→ ${chat}`);
+        return { ok: true, op: 'file', chat, name: sent.name, bytes: sent.bytes };
+      } catch (e) {
+        return { error: String(e.message || e) };
+      }
+    }
+    return { error: `不认识的 op：${op}（可用 voice / sticker / qzone / text / file）` };
   },
   simulate: (body = {}) => {
     // 调试用：直接把一个 OneBot 事件塞进事件总线，用来测「空 @」「只有图片」这类
@@ -4045,6 +4686,22 @@ const pollMin = Math.max(1, balanceConfig(cfg).pollMinutes);
 setInterval(() => {
   void checkBalance().catch((e) => note('warn', `余额检查失败: ${e.message}`));
 }, pollMin * 60 * 1000);
+
+// 目的引擎（原型）：每分钟算一遍「现在最想干什么」，结果只进日志和 data/purpose-state.json。
+// 一句都不发。先跑两天看日志像不像人，再决定要不要接"主动开口"那条线。
+if (cfg.purpose?.enabled !== false) {
+  const purposeTickMs = Math.max(30_000, cfg.purpose?.tickMs || 60_000);
+  setInterval(() => {
+    try {
+      purposeTick({ log: true });
+    } catch (e) {
+      note('warn', `目的引擎 tick 失败: ${e.message}`);
+    }
+  }, purposeTickMs);
+  note('info', `目的引擎: 开（每 ${Math.round(purposeTickMs / 1000)} 秒算一次，开不开口由它决定）`);
+} else {
+  note('info', '目的引擎: 关');
+}
 
 // 启动时先读最近三天日记（换天时会补写昨天那篇）
 void refreshDiaryIfNeeded()

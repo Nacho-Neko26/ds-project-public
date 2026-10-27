@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir, log } from './util.mjs';
 import { extractVoiceDirective } from './voice-intent.mjs';
+import { closureConfig, canWake } from './closure.mjs';
 
 export const DEFAULT_SELFWARE = {
   enabled: false,
@@ -27,6 +28,7 @@ export const DEFAULT_SELFWARE = {
   backoffPerUnanswered: 0.6,
   replyWindowMinutes: 10,
   dailyMax: 8,
+  quietEnabled: true,
   quietStartHour: 0,
   quietEndHour: 7,
   maxChars: 120,
@@ -52,13 +54,14 @@ function recordSpoken(history, session, text) {
   } catch { /* ignore */ }
 }
 
-export function buildSelfwakePrompt(session, transcript, idleMinutes, { voice = false } = {}) {
+export function buildSelfwakePrompt(session, transcript, idleMinutes, { voice = false, hint = '' } = {}) {
   const where = session.kind === 'group'
     ? `群聊「${session.title}」（群里还有别人，你说的话所有人都看得到）`
     : `私聊（对方是你认识的人）`;
   const lines = [
     `【场景】${where}`,
     `【现在】${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+    hint ? `【这会儿心里据记着的事】${hint}` : '',
     transcript ? `【之前的聊天记录】（以「我」开头的是你自己说过的话）\n${transcript}` : '',
     `（你自己想开口，不是对方在跟你说话。那边已经 ${idleMinutes} 分钟没动静了。）`,
     '',
@@ -92,7 +95,7 @@ export function cleanSelfwakeText(text, maxChars) {
 }
 
 export function createSelfwake({
-  cfg, sessions, history, runner, sendText, sendVoice, canVoice, note, paused, audit,
+  cfg, sessions, history, runner, sendText, sendVoice, canVoice, note, paused, audit, advisor, canWake,
 }) {
   const conf = () => selfwakeConfig(cfg);
   const stateFile = path.join(cfg.dataDir, 'selfwake.json');
@@ -115,6 +118,7 @@ export function createSelfwake({
 
   function inQuietHours(d = new Date()) {
     const c = conf();
+    if (c.quietEnabled === false) return false;
     const h = d.getHours();
     const a = Number(c.quietStartHour) || 0;
     const b = Number(c.quietEndHour) || 0;
@@ -126,44 +130,74 @@ export function createSelfwake({
   function pickTarget(now) {
     const c = conf();
     if (!sessions.size) return null;
+    const cc = closureConfig(cfg);
+    const load = (key) => { try { return history?.load ? history.load(key) : []; } catch { return []; } };
     const list = [...sessions.values()]
       .filter((s) => !s.busy && Number(s.lastActivityAt) > 0)
       .sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0));
     for (const s of list) {
       const idleMin = (now - s.lastActivityAt) / 60000;
       if (idleMin < c.minIdleMinutes) continue;
+      // 聊完了的会话先晾着：对方一句「嗯」「晚安」，不该被追着接话（2026-10-28）
+      const cw = canWake(load(s.key), s.lastActivityAt, now, cc);
+      if (!cw.ok) {
+        if (cc.debug) note('info', `[${s.key}] 跳过：${cw.reason}，还要等 ${cw.waitMin} 分钟`);
+        continue;
+      }
       return { session: s, idleMin: Math.round(idleMin) };
     }
     return null;
   }
 
   /** 到了点就开口（导出给测试用） */
-  async function tick({ force = false } = {}) {
+  async function tick({ force = false, only = null, hint: forcedHint = '' } = {}) {
     const c = conf();
     if (!c.enabled && !force) return { skipped: 'disabled' };
     if (busy) return { skipped: 'busy' };
     if (paused?.()) return { skipped: 'paused' };
+    // 她自己要安静（__WAKE__ off）：强制开口（早安排程）也认，除非是别人催的
+    if (typeof canWake === 'function' && !canWake()) return { skipped: 'muted' };
     const now = Date.now();
     if (!force && inQuietHours()) return { skipped: 'quiet' };
     if (!force && todayCount() >= c.dailyMax) return { skipped: 'daily-max' };
 
     const unanswered = Number(st.unanswered) || 0;
-    if (!force && unanswered >= c.maxUnanswered) return { skipped: 'unanswered' };
+    const driven = typeof advisor === 'function';
+    if (!force && !driven && unanswered >= c.maxUnanswered) return { skipped: 'unanswered' };
 
     const interval = (c.intervalMinutes + (Math.random() * 2 - 1) * c.jitterMinutes)
       * (1 + unanswered * c.backoffPerUnanswered);
     const sinceLast = st.lastSpokeAt ? (now - st.lastSpokeAt) / 60000 : Infinity;
-    if (!force && sinceLast < interval) return { skipped: 'interval', waitMin: Math.round(interval - sinceLast) };
+    if (!force && !driven && sinceLast < interval) return { skipped: 'interval', waitMin: Math.round(interval - sinceLast) };
 
-    const target = pickTarget(now);
-    if (!target) return { skipped: 'no-target' };
+    let target = null;
+    let hint = '';
+    let onSent = null;
+    if (only) {
+      // 指定会话直接说（早安排程走这条，绕开目的引擎和收尾判断）
+      const s = sessions.get(only);
+      if (!s) return { skipped: 'no-session' };
+      target = { session: s, idleMin: Math.round((now - (s.lastActivityAt || now)) / 60000) };
+      hint = forcedHint;
+    } else if (driven) {
+      const adv = await advisor();
+      if (!adv) return { skipped: 'no-purpose' };
+      const s = sessions.get(adv.sessionKey);
+      if (!s) return { skipped: 'no-session' };
+      target = { session: s, idleMin: Math.round((now - (s.lastActivityAt || now)) / 60000) };
+      hint = adv.hint || '';
+      onSent = typeof adv.onSent === 'function' ? adv.onSent : null;
+    } else {
+      target = pickTarget(now);
+      if (!target) return { skipped: 'no-target' };
+    }
 
     busy = true;
     try {
       const { session, idleMin } = target;
       const { transcript } = history.transcript(session.key);
       const voiceOk = typeof canVoice === 'function' ? Boolean(canVoice(session)) : false;
-      const prompt = buildSelfwakePrompt(session, transcript, idleMin, { voice: voiceOk });
+      const prompt = buildSelfwakePrompt(session, transcript, idleMin, { voice: voiceOk, hint });
       const startedAt = Date.now();
       const r = await runner.run({ prompt, withTools: false });
       if (!r.ok) { note('warn', `[${session.key}] 主动开口生成失败`); return { skipped: 'failed' }; }
@@ -201,6 +235,7 @@ export function createSelfwake({
           } catch (e) { note('warn', `[${session.key}] 主动语音发送失败：${e.message}`); }
         }
         recordSpoken(history, session, text || `[语音] ${vc.text}`);
+        onSent?.(text || '');
         session.lastReplyAt = Date.now();
         note('info', `[${session.key}] 主动开口（${Math.round((Date.now() - startedAt) / 1000)}s）：${text.slice(0, 40)}${vc ? ' + 语音' : ''}`);
       }
@@ -224,7 +259,8 @@ export function createSelfwake({
   function start() {
     const c = conf();
     if (!c.enabled) { note('info', '主动开口：未启用'); return { stop() {} }; }
-    note('info', `主动开口已启动：每 ${c.tickSeconds}s 检查，间隔 ${c.intervalMinutes}±${c.jitterMinutes} 分，安静 ${c.minIdleMinutes} 分才开口，静默 ${c.quietStartHour}-${c.quietEndHour} 点，每天最多 ${c.dailyMax} 次${c.dryRun ? '（dryRun，只记不发）' : ''}`);
+    const quietText = c.quietEnabled === false ? '全天不设静默时段' : `静默 ${c.quietStartHour}-${c.quietEndHour} 点`;
+    note('info', `主动开口已启动（开不开口由目的引擎派单）：每 ${c.tickSeconds}s 检查，间隔 ${c.intervalMinutes}±${c.jitterMinutes} 分，安静 ${c.minIdleMinutes} 分才开口，${quietText}，每天最多 ${c.dailyMax} 次${c.dryRun ? '（dryRun，只记不发）' : ''}`);
     timer = setInterval(() => { void tick(); }, Math.max(10, c.tickSeconds) * 1000);
     if (timer.unref) timer.unref();
     return { stop() { clearInterval(timer); timer = null; } };

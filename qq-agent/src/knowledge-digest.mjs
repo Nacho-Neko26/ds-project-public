@@ -55,7 +55,19 @@ function dayKeyOf(d = new Date()) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-function renderPrompt(rows, chatKey, c) {
+/** 群库里的「群里的梗」节点 id——黑话统一长在它下面，不再另建话题 */
+function findMemesNode(agentCwd, base) {
+  try {
+    const f = path.join(agentCwd, '.dsh-knowledge', `${base}.json`);
+    const d = JSON.parse(fs.readFileSync(f, 'utf8'));
+    const hit = (d.nodes || []).find((n) => /梗|黑话|说法/.test(String(n.title || '')));
+    return hit ? hit.id : 'root';
+  } catch {
+    return 'root';
+  }
+}
+
+function renderPrompt(rows, chatKey, c, memesId = 'root') {
   const lines = rows.map((r) => {
     const who = (r.role === 'bot' || r.role === 'assistant' || r.self === true) ? '你' : r.name;
     return `${hhmm(Number(r.t))} 【${who}】${String(r.text || '').slice(0, 200)}`;
@@ -74,8 +86,15 @@ function renderPrompt(rows, chatKey, c) {
     '',
     '做法：',
     `1. 先 knowledge_read("${c.base}") 看现有大纲，已有的条目不要重复建。`,
-    '2. 新建用 knowledge_write_node：base 填 "' + c.base + '"，parent 填 "root"，title 一两句说清这是什么，',
-    '   body 写清楚事实本身；body 最后另起一行写「什么时候该想起它：……」——这一行会进大纲摘要。',
+    `2. 新建用 knowledge_write_node，base 填 "${c.base}"，parent 分两种：`,
+    `   · 黑话 / 梗 / 缩写 / 怪说法 / 外号的由来 → parent 填 "${memesId}"（群里的梗），`,
+    '     title 就写那个词本身（别写成一个句子），body 固定四行：',
+    '     意思：一句话说清它在这里指什么',
+    '     例句：（把群聊里的原话抄一句，别自己编）',
+    '     谁在用：（常见的人名/场合，知道就写，不知道写「大家」）',
+    '     什么时候该想起它：（一句话——听到这个说法、或者要接这个梗的时候）',
+    `   · 其它知识（称呼、关系、约定、地点、禁忌）→ parent 填 "root"，title 一两句说清这是什么，`,
+    '     body 写清楚事实本身；body 最后另起一行写「什么时候该想起它：……」——这一行会进大纲摘要。',
     '3. 已有的条目要补充或修正，就 knowledge_write_node 带 node 参数改它，不要另建一个重复的。',
     `4. 最多写 ${c.maxNodes} 个节点。没有值得写的，就一个节点都别建。`,
     '',
@@ -123,7 +142,8 @@ export async function maybeDigestKnowledge({ cfg, runner, history, chatKey, note
   const slice = rows.slice(Math.max(0, rows.length - c.takeMessages));
   if (slice.length < 8) return null;
 
-  const r = await runner.run({ prompt: renderPrompt(slice, chatKey, c), withTools: false });
+  const memesId = findMemesNode(cfg.agentCwd, c.base);
+  const r = await runner.run({ prompt: renderPrompt(slice, chatKey, c, memesId), withTools: false });
   if (!r.ok || !r.text) {
     note('warn', `[${chatKey}] 知识整理失败`);
     return null;

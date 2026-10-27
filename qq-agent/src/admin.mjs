@@ -79,7 +79,7 @@ export function isAdminRole(role) {
  */
 export async function runAdminOp({
   ob, cfg, groupId, selfId, op, lastBotMsgId, actorIsOwner,
-  actorUid = 0, recent = [], favorOfUid = null,
+  actorUid = 0, actorLevel = 1, recent = [], favorOfUid = null,
 }) {
   const conf = adminConfig(cfg);
   if (!conf.enabled) return { ok: false, message: '群管理功能已关闭' };
@@ -89,9 +89,16 @@ export async function runAdminOp({
   const admin = isAdminRole(role);
   const kind = String(op?.op || '').toLowerCase();
 
-  // 号主没发话的时候，它自己只被允许做「撤回」这一件
-  if (!actorIsOwner && kind !== 'recall' && kind !== 'recall_last') {
-    return { ok: false, message: '这个得号主点头才能做' };
+  // 2026-10-28 用户定档位：号主没发话时，撤回/点赞她自己来，头衔和公告要第六档，
+  // 禁言和设管理要第七档，踢人永远只有主人能下（这一层是硬闸门，不听提示词的）。
+  const MIN_LEVEL = { title: 6, notice: 6, mute: 7, unmute: 7, set_admin: 7 };
+  if (!actorIsOwner) {
+    if (kind === 'kick') return { ok: false, message: '踢人只有主人能下' };
+    if (kind !== 'recall' && kind !== 'recall_last' && kind !== 'like') {
+      const need = MIN_LEVEL[kind];
+      if (!need) return { ok: false, message: '这个得号主点头才能做' };
+      if (Number(actorLevel || 0) < need) return { ok: false, message: '这个得等关系再近一些' };
+    }
   }
 
   try {
@@ -157,6 +164,67 @@ export async function runAdminOp({
       return { ok: true, message: `已把 ${uid} 的群名片改成「${card}」` };
     }
 
+    // ---- 以下都是 2026-10-28 接 SnowLuma 时补的，全部要号主点头（上面第 93 行已拦） ----
+
+    if (kind === 'kick') {
+      const uid = Number(op.uid || op.user_id || 0);
+      if (!uid) return { ok: false, message: '要踢谁？没给 QQ 号' };
+      if (uid === Number(selfId)) return { ok: false, message: '不能踢自己' };
+      if (!admin) return { ok: false, message: `${selfRef()}还不是管理员，踢不了人` };
+      const owners = (cfg.raw.persona?.ownerUids || []).map(Number);
+      if (owners.includes(uid)) return { ok: false, message: '主人不能踢' };
+      await ob.setGroupKick(groupId, uid, !!op.reject);
+      return { ok: true, message: `已把 ${uid} 请出本群${op.reject ? '（并拒绝再加）' : ''}` };
+    }
+
+    if (kind === 'whole_ban') {
+      if (!admin) return { ok: false, message: `${selfRef()}还不是管理员，开不了全员禁言` };
+      const enable = op.enable === undefined ? true : !!op.enable;
+      await ob.setGroupWholeBan(groupId, enable);
+      return { ok: true, message: enable ? '已开启全员禁言' : '已解除全员禁言' };
+    }
+
+    if (kind === 'set_admin') {
+      const uid = Number(op.uid || op.user_id || 0);
+      if (!uid) return { ok: false, message: '要设谁当管理？没给 QQ 号' };
+      if (!admin) return { ok: false, message: `${selfRef()}还不是管理员，设不了管理` };
+      const enable = op.enable === undefined ? true : !!op.enable;
+      await ob.setGroupAdmin(groupId, uid, enable);
+      return { ok: true, message: enable ? `已把 ${uid} 设成管理员` : `已取消 ${uid} 的管理员` };
+    }
+
+    if (kind === 'title') {
+      const uid = Number(op.uid || op.user_id || 0);
+      const title = String(op.title ?? '').slice(0, 20);
+      if (!uid) return { ok: false, message: '要给谁挂头衔？没给 QQ 号' };
+      if (!admin) return { ok: false, message: `${selfRef()}还不是管理员，挂不了头衔` };
+      await ob.setGroupSpecialTitle(groupId, uid, title, -1);
+      return { ok: true, message: title ? `已给 ${uid} 挂上「${title}」` : `已取消 ${uid} 的头衔` };
+    }
+
+    if (kind === 'notice') {
+      const content = String(op.content ?? op.text ?? '').trim();
+      if (!content) return { ok: false, message: '公告要写什么？内容是空的' };
+      if (!admin) return { ok: false, message: `${selfRef()}还不是管理员，发不了公告` };
+      await ob.sendGroupNotice(groupId, content.slice(0, 500));
+      return { ok: true, message: '公告发出去了' };
+    }
+
+    if (kind === 'group_name') {
+      const name = String(op.name ?? '').trim().slice(0, 30);
+      if (!name) return { ok: false, message: '群名改成什么？没给内容' };
+      if (!admin) return { ok: false, message: `${selfRef()}还不是管理员，改不了群名` };
+      await ob.setGroupName(groupId, name);
+      return { ok: true, message: `群名改成「${name}」了` };
+    }
+
+    if (kind === 'like') {
+      const id = Number(op.id || op.message_id || 0);
+      if (!id) return { ok: false, message: '给哪条点赞？没给消息 id' };
+      await ob.setMsgEmojiLike(id, String(op.emoji || '128077'));
+      return { ok: true, message: '点了' };
+    }
+
     return { ok: false, message: `不认识的群管理操作：${kind}` };
   } catch (e) {
     return { ok: false, message: `操作失败：${e.message}` };
@@ -171,6 +239,9 @@ export async function runAdminOp({
  */
 export function adminHint(role, isGroup, opt = {}) {
   if (!isGroup) return '';
+  // 2026-10-28 用户定档位：这几件的门槛要在提示里写清，不然她会一口答应下来又办不成。
+  const gate = '\n【档位门槛】挂头衔、发群公告要第六档；禁言、设管理要第七档；踢人永远只有号主能下。'
+    + '档位不够就直接说还不够熟，别答应下来。';
   if (!isAdminRole(role)) {
     return '[群管理] 你在本群只是普通成员：能撤回自己刚发的消息（__ADMIN__ {"op":"recall_last"}），'
       + '改不了别人的名片，也禁言不了任何人。有人让你禁言/踢人，就说你又不是管理，让管理来。';
@@ -187,13 +258,22 @@ export function adminHint(role, isGroup, opt = {}) {
       + '带 reason 的这种不占每天那五条的名额。'
       + '别人只是说话难听、跟你抬杠、你看不顺眼，一律不许撤，那是人家说话的地方。'
       + '主人说的话一条都不许碰，跟它熟的人也不碰。拿不准就别动，顶一句比撤一条强。'
-      + '最近消息 id 见下面那节，没在那节里的撤不了。';
+      + '最近消息 id 见下面那节，没在那节里的撤不了。' + gate;
   }
-  return '[群管理] 你是这个群的管理员，能禁言/解禁、撤回消息、改群名片。'
+  return '[群管理] 你是这个群的管理员，能禁言/解禁、撤回消息、改群名片、踢人、全员禁言、设管理员、挂头衔、发公告、改群名。'
     + '要动手就单独输出一行（不要写成文字）：\n'
     + '__ADMIN__ {"op":"mute","uid":123456,"minutes":10}\n'
     + '__ADMIN__ {"op":"unmute","uid":123456}\n'
     + '__ADMIN__ {"op":"recall","id":消息id}\n'
     + '__ADMIN__ {"op":"recall_last"}\n'
-    + '__ADMIN__ {"op":"card","uid":123456,"card":"新名片"}';
+    + '__ADMIN__ {"op":"card","uid":123456,"card":"新名片"}\n'
+    + '__ADMIN__ {"op":"kick","uid":123456,"reject":true}\n'
+    + '__ADMIN__ {"op":"whole_ban","enable":true}\n'
+    + '__ADMIN__ {"op":"set_admin","uid":123456,"enable":true}\n'
+    + '__ADMIN__ {"op":"title","uid":123456,"title":"头衔"}\n'
+    + '__ADMIN__ {"op":"notice","content":"公告正文"}\n'
+    + '__ADMIN__ {"op":"group_name","name":"新群名"}\n'
+    + '__ADMIN__ {"op":"like","id":消息id}\n'
+    + '踢人、全员禁言、改群名这三件只有号主能下；头衔和群公告第六档就办，禁言和设管理要第七档，够档就直接办。'
+    + '点名式的表情回应用 like 就够了，别为了点个赞写一整句。' + gate;
 }

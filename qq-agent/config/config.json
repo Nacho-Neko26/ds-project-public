@@ -81,9 +81,10 @@
         "backoffPerUnanswered": 0.6,
         "replyWindowMinutes": 10,
         "dailyMax": 4,
-        "quietStartHour": 0,
-        "quietEndHour": 7,
-        "maxChars": 120
+        "quietStartHour": null,
+        "quietEndHour": null,
+        "maxChars": 120,
+        "quietEnabled": false
     },
     "summary": {
         "enabled": true,
@@ -310,5 +311,35 @@
             "reviewPoolEnabled": true,
             "reviewPoolMinHits": 1
         }
+    },
+    "purpose": {
+        "enabled": true,
+        "tickMs": 60000,
+        "gapMinMs": 9000000,
+        "gapMaxMs": 18000000,
+        "initialDelayMinMs": 1800000,
+        "dailyMax": 4,
+        "quietStartMin": null,
+        "quietEndMin": null,
+        "idleThresholdMs": 1800000,
+        "materialWindowHours": 72,
+        "minMaterials": 2,
+        "maxGoals": 24,
+        "driveHalfLifeMs": 28800000,
+        "driveBaseline": 0.4,
+        "quietEnabled": false
+    },
+    "greeting": {
+        "enabled": true,
+        "at": "08:00",
+        "jitterMinutes": 20,
+        "hint": ""
+    },
+    "closure": {
+        "enabled": true,
+        "quietMinutes": 8,
+        "cooldownMinutes": 25,
+        "maxFinalChars": 30,
+        "shortChars": 6
     }
 }

@@ -128,6 +128,8 @@ export function renderSegments(message, { selfId = 0, ownerUids = [] } = {}) {
           url: d.url || '',
           fileId: d.file_id || '',
           size: Number(d.file_size ?? d.size ?? 0) || 0,
+          // SnowLuma 取私聊文件直链要 file_hash，NapCat 不给（空串，走不到那条路也无所谓）
+          fileHash: d.file_hash || d.fileHash || '',
         });
         break;
       // 在线文件（QQ 的「发送文件」走内核 onlinefile 段，NapCat 单独给了 type）

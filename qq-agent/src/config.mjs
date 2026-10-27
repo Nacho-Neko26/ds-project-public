@@ -89,9 +89,10 @@ const DEFAULTS = {
         困: '用日常聊天、放松、带一点点撒娇的语气',
       },
     },
-    // 宿主机目录（桥写文件）与容器内目录（NapCat 读文件）必须挂载到同一处
-    dir: '/root/napcat/data/voice',
-    containerDir: '/app/voice',
+    // 宿主机目录（桥写文件）与容器内目录（SnowLuma 读文件）必须挂载到同一处。
+    // 2026-10-28 换底座：snowluma 只挂 /root/snowluma/{data,config,local}，旧的 /app/voice 已经不存在。
+    dir: '/root/snowluma/data/voice',
+    containerDir: '/app/data/voice',
     // 一条语音最多多少字：40 字约 8 秒，再长就不像随手录的了
     maxChars: 60,
   },
@@ -106,7 +107,7 @@ const DEFAULTS = {
     enabled: false, dryRun: false, tickSeconds: 60,
     intervalMinutes: 25, jitterMinutes: 10, minIdleMinutes: 20,
     maxUnanswered: 3, backoffPerUnanswered: 0.6, replyWindowMinutes: 10,
-    dailyMax: 8, quietStartHour: 0, quietEndHour: 7, maxChars: 120,
+    dailyMax: 8, quietEnabled: true, quietStartHour: 0, quietEndHour: 7, maxChars: 120,
   },
   // 人设与身份槽位。
   //   身份类内容（名字/自称/昵称/称呼/外号/设定域）不写在代码里，统一从 character 读；

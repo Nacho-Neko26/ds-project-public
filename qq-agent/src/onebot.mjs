@@ -157,6 +157,68 @@ export class OneBot extends EventEmitter {
     });
   }
 
+  /** 踢人；rejectAddRequest=true 时顺手拒绝他再加群 */
+  setGroupKick(groupId, userId, rejectAddRequest = false) {
+    return this.call('set_group_kick', {
+      group_id: Number(groupId), user_id: Number(userId), reject_add_request: !!rejectAddRequest,
+    });
+  }
+
+  /** 全员禁言；enable=true 开、false 关 */
+  setGroupWholeBan(groupId, enable = true) {
+    return this.call('set_group_whole_ban', { group_id: Number(groupId), enable: !!enable });
+  }
+
+  /** 设 / 撤管理员 */
+  setGroupAdmin(groupId, userId, enable = true) {
+    return this.call('set_group_admin', {
+      group_id: Number(groupId), user_id: Number(userId), enable: !!enable,
+    });
+  }
+
+  /** 群专属头衔；永久用 -1，空字符串 = 取消 */
+  setGroupSpecialTitle(groupId, userId, title, duration = -1) {
+    return this.call('set_group_special_title', {
+      group_id: Number(groupId), user_id: Number(userId),
+      special_title: String(title ?? ''), duration: Number(duration),
+    });
+  }
+
+  /** 发群公告（SnowLuma 的动作名带下划线前缀） */
+  sendGroupNotice(groupId, content) {
+    return this.call('_send_group_notice', {
+      group_id: Number(groupId), content: String(content ?? ''),
+    }, 20000);
+  }
+
+  /** 改群名 */
+  setGroupName(groupId, name) {
+    return this.call('set_group_name', {
+      group_id: Number(groupId), group_name: String(name ?? ''),
+    });
+  }
+
+  /** 给某条消息加表情回应（默认 👍） */
+  setMsgEmojiLike(messageId, emojiId = '128077') {
+    return this.call('set_msg_emoji_like', {
+      message_id: Number(messageId), emoji_id: String(emojiId),
+    }, 8000);
+  }
+
+  /* ---- 拟人化：已读 / 正在输入（2026-10-28） ---- */
+
+  /** 把某条消息标成已读 */
+  markMsgAsRead(messageId) {
+    return this.call('mark_msg_as_read', { message_id: Number(messageId) }, 8000);
+  }
+
+  /** 正在输入；eventType 1=输入中 2=取消，群聊要带 groupId */
+  setInputStatus({ userId, groupId = 0, eventType = 1 }) {
+    const params = { user_id: Number(userId), event_type: Number(eventType) };
+    if (Number(groupId)) params.group_id = Number(groupId);
+    return this.call('set_input_status', params, 8000);
+  }
+
   /* ---- 戳一戳（2026-10-28） ---- */
 
   /** 私聊戳：user_id = 被戳的人 */

@@ -159,6 +159,15 @@ export class AgentRunner {
       '    includeHarnessIdentity: false',
       `    personaPrefix: ${JSON.stringify(text)}`,
       '',
+      // 读图这条路必须钉死一个「能吃图片输入」的模型。
+      // 中转的 deepseek-v4.1-flash 不支持图片，read_image 会直接报
+      // model does not support image input —— 2026-10-28 她对着一张图说「看不了」就是这个。
+      // 官方 deepseek-flash 支持，所以图片描述单独走官方，跟聊天走哪条线无关。
+      '- id: agent-default-model',
+      '  config:',
+      '    provider: deepseek-official',
+      '    model: deepseek-flash',
+      '',
     ].join('\n');
     fs.writeFileSync(this.describePatch, yaml, 'utf8');
   }
@@ -229,7 +238,7 @@ export class AgentRunner {
    *   'web'  → 只留 tool-web，能搜网页但碰不到文件/shell（普通群友被 @ 时）
    *   'none' → 不给工具（默认）
    */
-  async run({ prompt, toolMode = 'none', withTools, permissionMode, persona = true, extraPatch = null }) {
+  async run({ prompt, toolMode = 'none', withTools, permissionMode, persona = true, extraPatch = null, modelPatch = true }) {
     if (!this.dsh.script) throw new Error('dsh 入口未找到');
     // 兼容老调用：withTools: true 等价于 toolMode: 'full'
     const mode = withTools === true ? 'full' : (withTools === false ? 'none' : toolMode);
@@ -267,7 +276,9 @@ export class AgentRunner {
     const st = readModelMode(this.cfg);
     const route = st.mode === 'official' ? 'official' : 'relay';
     const runOnce = async (r) => {
-      const args = [...baseArgs(), '--patch', this.modelPatches[r]];
+      // modelPatch: false 时完全不挂路线 patch —— 图片描述要把模型钉在能吃图的官方模型上，
+      // 这里再追加一次 relay21r 会把它覆盖回去（2026-10-28 踩过：patch 写了官方，还是走中转）。
+      const args = [...baseArgs(), ...(modelPatch ? ['--patch', this.modelPatches[r]] : [])];
       const out = await this.#spawn([...args, ...(wantJson ? ['--json'] : []), prompt], env);
       return this.#finish(out, wantJson);
     };
@@ -275,7 +286,7 @@ export class AgentRunner {
     let result = await runOnce(route);
     if (wantJson && !result.ok && this.#looksLikeUnknownFlag(result.stderr)) {
       log('warn', 'dsh 不支持 --json，退回纯文本模式');
-      const args = [...baseArgs(), '--patch', this.modelPatches[route], prompt];
+      const args = [...baseArgs(), ...(modelPatch ? ['--patch', this.modelPatches[route]] : []), prompt];
       const plain = await this.#spawn(args, env);
       return { ...plain, text: stripAnsi(plain.stdout).trim(), usage: null, route };
     }
@@ -368,13 +379,17 @@ export class AgentRunner {
     const film = opts.filmstrip && Number(opts.filmstrip.frames) > 1 ? Number(opts.filmstrip.frames) : 0;
     const prompt = [
       '只做一件事：用 read_image 工具读取下面的图片，然后只输出一行 JSON，不要任何多余文字、不要代码块。',
-      '格式：{"summary":"一句话客观描述，40 字以内","tags":["搞笑"],"moodHints":["happy"]}',
+      '格式：{"summary":"一句话客观描述，40 字以内","tags":["搞笑"],"moodHints":["happy"],"use":["怼人"],"ocr":"图上文字原文，没有就空串"}',
       film
         ? `注意：这是一张「动图拆帧拼图」——同一张动图的 ${film} 帧按时间顺序拼在一张网格图里（左上→右下）。`
           + `把它当成一个连贯的动作来描述：说清发生了什么、怎么变化；不许说成「${film} 张图」「多张小图」，也不要逐格罗列。`
         : '',
       'tags 只能从这九个里挑 1~3 个：搞笑、可爱、攻击性、敷衍、安慰、日常、涩涩、破防、加油。',
       'moodHints 只能从这九个里挑 0~2 个：happy、encouraging、surprised、gentle、calm、confused、soft、sad、sleepy。',
+      // 2026-10-28 用户要「情绪、用途、图上文字一次给全，别再回头从描述里推断」。
+      // 描述是给人看的散文，用途是给检索用的标签，两者别混在一个字段里。
+      'use 是这张图适合拿去干什么，只能从这九个里挑 0~2 个：打招呼、道别、答应、拒绝、催促、安慰、夸人、看戏、接梗。',
+      'ocr 原样抄下图上的字，一个字都不要改、不要翻译；没有文字就留空串。',
       'summary 要客观：不用第一人称、不加角色口吻；图里有文字就原样读出来。',
       hint ? '（图片可能来自聊天气泡，附注：' + hint + '）' : '',
       '图片路径：' + file,
@@ -386,6 +401,7 @@ export class AgentRunner {
       permissionMode: 'read-only',
       persona: false,
       extraPatch: this.describePatch,
+      modelPatch: false,
     });
   }
 }

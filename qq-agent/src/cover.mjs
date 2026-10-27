@@ -19,8 +19,8 @@ function cfgOf(cfg) {
   return {
     dir: path.join(cfg.dataDir, 'cover'),
     pollMs: Number(c.pollMs) || 15000,
-    voice: c.voice || '/root/napcat/data/voice',
-    containerDir: c.containerDir || '/app/voice',
+    voice: c.voice || cfg.raw.voice?.dir || '/root/snowluma/data/voice',
+    containerDir: c.containerDir || cfg.raw.voice?.containerDir || '/app/data/voice',
     maxKeep: Number(c.maxKeep) || 20,
     // 多长的成品还发「语音条」。实测（2026-10-26）QQ 连 5 分半的整首歌都收得下
     // （NapCat 会转成 silk，retcode 0），所以默认放到 180 秒，短歌直接就是一条语音；

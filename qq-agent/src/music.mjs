@@ -182,8 +182,8 @@ export async function makeClip(src, dest, { startSeconds = 20, seconds = 60, ffm
 async function sendSongVoice({ ob, cfg, session, song, note }) {
   const conf = musicConfig(cfg);
   const vcfg = cfg.raw.voice || {};
-  const voiceDir = vcfg.dir || '/root/napcat/data/voice';
-  const containerDir = vcfg.containerDir || '/app/voice';
+  const voiceDir = vcfg.dir || '/root/snowluma/data/voice';
+  const containerDir = vcfg.containerDir || '/app/data/voice';
   try {
     fs.mkdirSync(voiceDir, { recursive: true });
   } catch { /* 目录不通就走下面的失败分支 */ }

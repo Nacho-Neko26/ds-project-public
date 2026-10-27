@@ -197,3 +197,59 @@ export async function learnMemories({ runner, cfg, chatKey, chatTitle }) {
   if (added.length) log('info', `记忆 +${added.length} 条（${chatKey}）`);
   return added;
 }
+
+
+/* ===== 她自己主动记 / 查 / 删 / 清（对应 qq_memory_* 那四个） =====
+ * scope: 'self' 关于她自己；'group:<id>' 关于某个群。
+ */
+
+/** 主动记一条。一句话，太长或涉隐私都不记。 */
+export function appendMemory(agentCwd, scope, text) {
+  const body = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!body) return { ok: false, err: '内容为空' };
+  if (isPrivate(body)) return { ok: false, err: '这条涉及隐私，不记' };
+  if (body.length > 120) return { ok: false, err: '太长了，一句话说完' };
+  const rows = readAllMemories(agentCwd);
+  const same = rows.filter((r) => r.scope === scope);
+  if (alreadyKnown(same, body)) return { ok: false, err: '这条已经记过了' };
+  appendJsonl(memoryFile(agentCwd), { t: Date.now(), scope, text: body });
+  pruneScope(agentCwd, scope, memoryConfig(null).maxPerScope);
+  return { ok: true, text: body };
+}
+
+/** 查：关键词模糊匹配；不给关键词就都列出来 */
+export function queryMemory(agentCwd, scope, q) {
+  const rows = readAllMemories(agentCwd);
+  const pool = scope ? rows.filter((r) => r.scope === scope) : rows;
+  const kw = norm(q || '');
+  const hit = kw ? pool.filter((r) => norm(r.text).includes(kw)) : pool;
+  return hit.map((r, i) => ({ idx: i + 1, scope: r.scope, text: r.text, t: r.t }));
+}
+
+/** 删一条：给一句能认出它的文本片段 */
+export function removeMemory(agentCwd, scope, needle) {
+  const file = memoryFile(agentCwd);
+  const rows = readAllMemories(agentCwd);
+  const kw = norm(needle || '');
+  if (!kw) return { ok: false, err: '要说删哪一条' };
+  let hit = null;
+  const kept = [];
+  for (const r of rows) {
+    const inScope = !scope || r.scope === scope;
+    if (!hit && inScope && norm(r.text).includes(kw)) { hit = r; continue; }
+    kept.push(r);
+  }
+  if (!hit) return { ok: false, err: '没找到这条' };
+  fs.writeFileSync(file, kept.map((r) => JSON.stringify(r)).join('\n') + (kept.length ? '\n' : ''), 'utf8');
+  return { ok: true, removed: hit.text };
+}
+
+/** 清空某个范围的全部记忆 */
+export function clearMemory(agentCwd, scope) {
+  const file = memoryFile(agentCwd);
+  const rows = readAllMemories(agentCwd);
+  const kept = rows.filter((r) => r.scope !== scope);
+  const gone = rows.length - kept.length;
+  fs.writeFileSync(file, kept.map((r) => JSON.stringify(r)).join('\n') + (kept.length ? '\n' : ''), 'utf8');
+  return { ok: true, removed: gone };
+}

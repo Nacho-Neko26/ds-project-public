@@ -426,8 +426,21 @@ export function readImpressions(agentCwd) {
 export async function updateImpressions({ runner, cfg, key, byChat, people }) {
   const old = readImpressions(cfg.agentCwd);
   const material = renderDayMaterial(byChat, key, { maxPerChat: 60, maxCharsPerLine: 40 });
-  const roster = people.length
-    ? people.map((p) => `- ${p.name}，你叫他「${p.call}」，今天说了 ${p.msgs} 句`).join('\n')
+
+  // 档案只养 20 个人（2026-10-28 用户定）：主人永远在，其余按亲近度 + 聊天量取前 19
+  const MAX_PEOPLE = 20;
+  const ranked = [...people].sort((a, b) => {
+    const ao = isOwner(a.uid, cfg) ? 1 : 0;
+    const bo = isOwner(b.uid, cfg) ? 1 : 0;
+    if (ao !== bo) return bo - ao;
+    return (Number(b.intimacy ?? 0) * 1000 + Number(b.msgs ?? 0)) - (Number(a.intimacy ?? 0) * 1000 + Number(a.msgs ?? 0));
+  });
+  const kept = ranked.slice(0, MAX_PEOPLE);
+  const dropped = ranked.length - kept.length;
+
+  const roster = kept.length
+    ? kept.map((p) => `- ${p.name}，你叫他「${p.call}」，今天说了 ${p.msgs} 句`).join('\n') +
+      (dropped > 0 ? `\n（另外还有 ${dropped} 人今天说过话，不够格进档案）` : '')
     : '（今天没跟人说话）';
   const prompt = [
     '你要更新「对每个人的印象」档案。这不是日记，是长期的人物档案：你对他们的看法会一直留着。',
@@ -445,6 +458,8 @@ export async function updateImpressions({ runner, cfg, key, byChat, people }) {
     '- 输出**整份档案**（不是只写今天这段）。每人一段，格式固定：',
     '  ## 名字（QQ 号；不知道号码就写「群里的人」）',
     '  - 一条一句话，写你对这个人的判断：性格、习惯、爱聊什么、让你记恩或记仇的事、你跟他什么关系',
+    `- 档案里最多 ${MAX_PEOPLE} 个人。只写上面名单里的人；名单外的，就算以前写过也整段删掉。`,
+    '- 位置先给主人，再给你最熟、聊得最多、有恩或有仇的；剩下的空位留给以后认识的人。',
     '- 每人最多 5 条，只留最有用的。有新发现就改掉旧的或加一条，不许把新旧重复叠着写。',
     '- 今天没有新信息的人，原样保留他那段，一个字都不用改。',
     '- 只写人和你看他的眼光，不写今天发生了什么事——那是日记里的事。',
@@ -459,8 +474,22 @@ export async function updateImpressions({ runner, cfg, key, byChat, people }) {
   }
   const text = r.text.trim();
   ensureDir(cfg.agentCwd);
+  // 覆盖之前留一份快照：印象只会越改越准，但改错了得能翻回去
+  try {
+    const f = impressionsPath(cfg.agentCwd);
+    if (old) {
+      const hist = path.join(cfg.agentCwd, 'impressions-history');
+      ensureDir(hist);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      fs.writeFileSync(path.join(hist, `${stamp}.md`), old + '\n', 'utf8');
+      const files = fs.readdirSync(hist).filter((x) => x.endsWith('.md')).sort();
+      for (const x of files.slice(0, Math.max(0, files.length - 10))) {
+        try { fs.unlinkSync(path.join(hist, x)); } catch { /* ignore */ }
+      }
+    }
+  } catch { /* 快照失败不影响主流程 */ }
   fs.writeFileSync(impressionsPath(cfg.agentCwd), text + '\n', 'utf8');
-  log('info', `印象档案已更新（${key}，${text.length} 字 / ${people.length} 人）`);
+  log('info', `印象档案已更新（${key}，${text.length} 字 / ${kept.length} 人${dropped > 0 ? `，另有 ${dropped} 人不入档` : ''}）`);
   return text;
 }
 

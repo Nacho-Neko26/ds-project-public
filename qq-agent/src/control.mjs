@@ -1,129 +1,10 @@
 import http from 'node:http';
+import fs from 'node:fs';
 import { log } from './util.mjs';
+import { listStickers, stickerImage, updateSticker, deleteSticker, restoreSticker } from './sticker-api.mjs';
+import { PAGE } from './control-page.mjs';
+import { chatList, chatMessages, usageSummary, purposeState, memoryStruct } from './control-data.mjs';
 
-const PAGE = `<!doctype html>
-<html lang="zh-CN"><meta charset="utf-8">
-<title>QQ 桥 · 控制台</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-  :root{color-scheme:light dark}
-  body{font:15px/1.6 system-ui,"Segoe UI",sans-serif;max-width:760px;margin:40px auto;padding:0 20px}
-  h1{font-size:20px;margin:0 0 4px}
-  .sub{color:#888;font-size:13px;margin-bottom:24px}
-  .card{border:1px solid #8884;border-radius:10px;padding:16px;margin-bottom:14px}
-  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
-  label{color:#888;min-width:76px;font-size:13px}
-  code{background:#8882;padding:1px 6px;border-radius:4px}
-  button{font:inherit;padding:7px 16px;border-radius:8px;border:1px solid #8886;background:#8881;cursor:pointer}
-  button:hover{background:#8883}
-  button.danger{color:#c22;border-color:#c228}
-  #state{font-weight:600}
-  .ok{color:#1a7f37}.bad{color:#c22}
-  pre{background:#8881;padding:10px;border-radius:8px;overflow:auto;font-size:12px;max-height:260px}
-</style>
-<h1>QQ 桥 · 控制台</h1>
-<div class="sub">本地桥接进程状态。这个页面只监听 127.0.0.1，别人碰不到。</div>
-
-<div class="card">
-  <div class="row"><label>NapCat</label><span id="link">—</span></div>
-  <div class="row"><label>当前状态</label><span id="state">—</span></div>
-  <div class="row"><label>账号</label><span id="self">—</span></div>
-  <div class="row"><label>忙碌</label><span id="busy">—</span></div>
-  <div class="row"><label>统计</label><span id="stats">—</span></div>
-  <div class="row"><label>Token</label><span id="tokens">—</span></div>
-  <div class="row" style="margin-top:14px">
-    <button id="pause" class="danger">急停（停止回复）</button>
-    <button id="resume">恢复</button>
-    <button id="reload">重载配置</button>
-  </div>
-</div>
-
-<div class="card">
-  <div class="row"><label>会话</label><span id="chats" style="font-size:13px">—</span></div>
-</div>
-
-<div class="card">
-  <div class="row"><label>记忆</label>
-    <select id="memfile" style="max-width:320px"></select>
-    <button id="memopen">打开</button>
-    <input id="memq" placeholder="搜索记忆…" style="flex:1;min-width:120px">
-    <button id="memsearch">搜</button>
-  </div>
-  <textarea id="memtext" spellcheck="false" style="width:100%;height:220px;font:12px/1.5 ui-monospace,Consolas,monospace;background:#8881;border:1px solid #8886;border-radius:8px;padding:8px"></textarea>
-  <div class="row">
-    <button id="memsave">保存</button>
-    <span id="memmsg" style="font-size:12px;color:#888">改之前会自动备份</span>
-  </div>
-  <pre id="memhits" style="display:none"></pre>
-</div>
-
-<div class="card">
-  <div class="row"><label>最近日志</label></div>
-  <pre id="log">—</pre>
-</div>
-
-<script>
-const $ = (id) => document.getElementById(id);
-const post = (p) => fetch(p, { method: 'POST' }).then(r => r.json());
-async function tick() {
-  try {
-    const s = await (await fetch('/api/status')).json();
-    $('link').innerHTML = s.connected ? '<span class="ok">已连接</span>' : '<span class="bad">未连接</span>';
-    $('state').innerHTML = s.paused ? '<span class="bad">已急停</span>' : '<span class="ok">正常回复</span>';
-    $('self').textContent = s.self ? s.self.nickname + ' (' + s.self.user_id + ')' : '—';
-    $('busy').textContent = s.busy + ' / ' + s.maxConcurrent;
-    $('stats').textContent = '收到 ' + s.stats.received + ' · 回复 ' + s.stats.replied + ' · 跳过 ' + s.stats.skipped + ' · 失败 ' + s.stats.failed;
-    const st = s.stats || {};
-    $('tokens').textContent = st.turns
-      ? ('新读 ' + st.tokensIn + ' · 缓存 ' + st.tokensCache + ' · 输出 ' + st.tokensOut + ' · ' + st.turns + ' 轮 · 每轮 ' + Math.round((st.tokensIn + st.tokensCache + st.tokensOut) / st.turns))
-      : '—';
-    $('chats').textContent = s.chats.map(c => c.key + ' (' + c.pending + '待处理)').join(' · ') || '—';
-    $('log').textContent = s.logs.slice(-14).join('\\n');
-  } catch (e) { $('state').textContent = '桥接进程未响应'; }
-}
-// ---- 记忆 ----
-let memList = [];
-async function memRefresh() {
-  const r = await (await fetch('/api/memory/list')).json();
-  memList = r.files || [];
-  $('memfile').innerHTML = memList.map(f => '<option value="' + f.id + '|' + f.rel + '">' + f.group + ' / ' + f.rel + '</option>').join('') || '<option>（没有文件）</option>';
-}
-async function memOpen() {
-  const v = $('memfile').value || '';
-  const rel = v.split('|')[1];
-  if (!rel) return;
-  const r = await (await fetch('/api/memory/read?rel=' + encodeURIComponent(rel))).json();
-  $('memtext').value = r.error ? ('读取失败：' + r.error) : r.text;
-  $('memmsg').textContent = r.error ? r.error : ('已打开 ' + r.rel);
-  $('memhits').style.display = 'none';
-}
-$('memopen').onclick = memOpen;
-$('memfile').onchange = memOpen;
-$('memsave').onclick = async () => {
-  const rel = ($('memfile').value || '').split('|')[1];
-  if (!rel) return;
-  const r = await (await fetch('/api/memory/write', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rel, text: $('memtext').value }) })).json();
-  $('memmsg').textContent = r.error ? ('保存失败：' + r.error) : ('已保存 ' + r.rel + '，备份 ' + r.backup);
-  memRefresh();
-};
-$('memsearch').onclick = async () => {
-  const q = $('memq').value.trim();
-  if (!q) return;
-  const r = await (await fetch('/api/memory/search?q=' + encodeURIComponent(q))).json();
-  const hits = r.hits || [];
-  $('memhits').style.display = 'block';
-  $('memhits').textContent = hits.length
-    ? hits.map(h => h.group + '/' + h.rel + ':' + h.line + '  ' + h.text).join('\n')
-    : '（没搜到）';
-};
-memRefresh();
-
-$('pause').onclick = () => post('/api/pause').then(tick);
-$('resume').onclick = () => post('/api/resume').then(tick);
-$('reload').onclick = () => post('/api/reload').then(tick);
-tick(); setInterval(tick, 2000);
-</script>
-</html>`;
 
 function readJsonBody(req, limit = 2_000_000) {
   return new Promise((resolve, reject) => {
@@ -246,6 +127,62 @@ export function startControl(cfg, hooks) {
           const body = await readJsonBody(req, 10_000);
           json(hooks.simulate(body));
         } catch (e) { json({ error: e.message }, 400); }
+        return;
+      }
+      // ── 会话 / token / 目的 / 结构化记忆（2026-10-28）──────────────
+      if (req.method === 'GET' && url.pathname === '/api/chat/list') {
+        json(chatList(cfg));
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/chat/messages') {
+        try { json(chatMessages(cfg, url.searchParams.get('key'), url.searchParams.get('limit'))); }
+        catch (e) { json({ error: e.message }, 400); }
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/usage/summary') {
+        json(usageSummary(cfg, url.searchParams.get('days')));
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/purpose/state') {
+        json(purposeState(cfg));
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/memory/struct') {
+        json(memoryStruct(cfg, url.searchParams.get('grep') || ''));
+        return;
+      }
+      // ── 表情库（2026-10-28 从 tools/sticker-admin.mjs 搬进来）─────────
+      if (req.method === 'GET' && url.pathname === '/api/stickers') {
+        json(listStickers({
+          grep: url.searchParams.get('grep') || '',
+          offset: url.searchParams.get('offset') || 0,
+          limit: url.searchParams.get('limit') || 60,
+        }));
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/stickers/img') {
+        const hit = stickerImage(url.searchParams.get('i') || 0);
+        if (!hit) { res.writeHead(404); res.end('no image'); return; }
+        try {
+          const buf = fs.readFileSync(hit.file);
+          res.writeHead(200, { 'content-type': hit.mime, 'cache-control': 'max-age=3600' });
+          res.end(buf);
+        } catch { res.writeHead(404); res.end('read fail'); }
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/stickers/update') {
+        try { json({ ok: true, row: updateSticker(await readJsonBody(req, 20000)) }); }
+        catch (e) { json({ error: e.message }, 400); }
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/stickers/del') {
+        try { json({ ok: true, ...deleteSticker(await readJsonBody(req, 20000)) }); }
+        catch (e) { json({ error: e.message }, 400); }
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/stickers/restore') {
+        try { json({ ok: true, row: restoreSticker(await readJsonBody(req, 20000)) }); }
+        catch (e) { json({ error: e.message }, 400); }
         return;
       }
       json({ error: 'not found' }, 404);

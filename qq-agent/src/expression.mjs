@@ -739,8 +739,21 @@ export function takeTagJobs(cfg, limit = 1) {
   return jobs;
 }
 
+/** 用途词表（2026-10-28）：和打标提示词里那九个一一对应，改成别的词这里要跟着改 */
+const USE_WORDS = new Set(['打招呼', '道别', '答应', '拒绝', '催促', '安慰', '夸人', '看戏', '接梗']);
+
+/** 用途只收词表内的，最多两个——模型爱自由发挥，放行了检索就废了 */
+function normalizeUseList(list) {
+  const out = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const w = String(raw ?? '').trim();
+    if (USE_WORDS.has(w) && !out.includes(w)) out.push(w);
+  }
+  return out.slice(0, 2);
+}
+
 /** 打标结果落库。failed=true 时累计重试，三次后丢弃。 */
-export function tagEmoji({ cfg, digest, summary = '', tags = [], moodHints = [], failed = false, now = Date.now() }) {
+export function tagEmoji({ cfg, digest, summary = '', tags = [], moodHints = [], use = [], ocr = '', failed = false, now = Date.now() }) {
   const c = memeHubConfig(cfg);
   const st = loadExpression(cfg);
   const hub = ensureHub(st);
@@ -759,6 +772,9 @@ export function tagEmoji({ cfg, digest, summary = '', tags = [], moodHints = [],
   const blocked = clean.some((t) => HARD_BLOCK_TAGS.has(t));
   item.summary = String(summary || '').slice(0, 120);
   item.moodHints = normalizeMoods(moodHints);
+  // 2026-10-28：用途和图上文字一起入库，别再回头从描述里猜
+  item.use = normalizeUseList(use);
+  item.ocr = String(ocr || '').replace(/\s+/g, ' ').trim().slice(0, 200);
   item.associatedMood = [...new Set([...(item.associatedMood || []), ...item.moodHints])];
   item.taggedAt = now;
   item.retries = 0;
@@ -906,7 +922,7 @@ export function renderMemeHint(plan) {
 /** §16.3 解析 describeImage 的返回：优先一行 JSON，坏了退回纯文本（绝不抛） */
 export function parseDescPayload(raw) {
   const text = String(raw ?? '').trim();
-  const out = { text: text.slice(0, 200), tags: [], moodHints: [] };
+  const out = { text: text.slice(0, 200), tags: [], moodHints: [], use: [], ocr: '' };
   const a = text.indexOf('{');
   const b = text.lastIndexOf('}');
   if (a < 0 || b <= a) return out;
@@ -916,6 +932,9 @@ export function parseDescPayload(raw) {
     if (body) out.text = String(body).slice(0, 200);
     if (Array.isArray(obj.tags)) out.tags = obj.tags.map((t) => String(t));
     if (Array.isArray(obj.moodHints)) out.moodHints = obj.moodHints.map((m) => String(m));
+    // 2026-10-28：用途和图上文字让打标一次给全，别再从描述里推断
+    if (Array.isArray(obj.use)) out.use = obj.use.map((u) => String(u));
+    if (obj.ocr) out.ocr = String(obj.ocr);
   } catch { /* 不是 JSON 就按纯文本用 */ }
   return out;
 }

@@ -10,6 +10,9 @@
  *   __NICK__ {"name":"..."}                  称呼
  *   __MOOD__ {"dvalence":0.1,"darousal":-0.05,"why":"..."}  情绪增量（次轮生效）
  *   __QUOTE__                                这句话引用对方那条消息（指向不清时才用）
+ *   __SEND_FILE__ <服务器路径>               把这个文件发进当前会话（2026-10-28）
+ *     这个不在这张表里解析——它跟 __SEND_STICKER__ / __POKE__ 一样由各自的
+ *     extract*Directive 单独摘（见 index.mjs），这里只负责在清洗白名单里放行。
  *
  * 原来每个指令各写一个正则（表情、语音、转发），加到第四个时已经很难读，
  * 这里统一成一个：行首 __名字__ + 剩余内容。
@@ -28,6 +31,8 @@ export function normalizeDirectiveLines(text) {
     (m, pre, sp, head, rest) => {
       const name = [head, ...rest.split(/[-_ ]+/).filter(Boolean)].join('_').toUpperCase();
       if (!/^(SEND|VOICE|REMIND|ADMIN|MUSIC|NICK|MOOD|QUOTE|SYNC)(_|$)/.test(name)) return m;
+      // SEND_FILE 是 2026-10-28 新加的（本机处理完把产物发回去），
+      // 上面的 SEND 前缀本来就能放行，这里单独点出来免得以后被当成笔误删掉。
       return `${pre}${sp}__${name}__ `;
     },
   );
