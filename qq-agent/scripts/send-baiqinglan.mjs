@@ -64,14 +64,14 @@ function call(action, params) {
 }
 
 console.log('legend', JSON.stringify((await call('send_private_msg', {
-  user_id: <OWNER_QQ>,
+  user_id: 100000001,
   message: [{ type: 'text', data: { text: legend } }],
 })).data || {}));
 
 for (const c of sent) {
   await new Promise((r) => setTimeout(r, 1200));
   const res = await call('send_private_msg', {
-    user_id: <OWNER_QQ>,
+    user_id: 100000001,
     message: [{ type: 'record', data: { file: c.path } }],
   });
   console.log(c.id, c.label, JSON.stringify(res.data || res));

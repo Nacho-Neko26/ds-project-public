@@ -36,7 +36,7 @@ const reply = await new Promise((resolve) => {
   });
   ws.send(JSON.stringify({
     action: 'send_private_msg',
-    params: { user_id: <OWNER_QQ>, message: [{ type: 'record', data: { file: `/app/voice/${name}` } }] },
+    params: { user_id: 100000001, message: [{ type: 'record', data: { file: `/app/voice/${name}` } }] },
     echo: 'bailian-live',
   }));
 });

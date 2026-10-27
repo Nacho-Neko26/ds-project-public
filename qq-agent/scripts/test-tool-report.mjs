@@ -1,5 +1,5 @@
 // 工具执行报告不许原样进聊天 —— 回归测试
-// 事故来源：2026-10-26 11:33:38 群 <GROUP_ID_2>，`#翻唱整首美人鱼` 被当工作项跑，
+// 事故来源：2026-10-26 11:33:38 群 200000002，`#翻唱整首美人鱼` 被当工作项跑，
 // runWorkItem 把 r.text 原样 say() 发进群（markdown + EACCES + 沙箱路径）。
 // 跑：node scripts/test-tool-report.mjs
 import { cleanToolReport } from '../src/thinking-guard.mjs';

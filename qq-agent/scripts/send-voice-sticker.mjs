@@ -1,7 +1,7 @@
 /**
  * 群发一条语音 + 一张表情（以机器人身份发）。
  *
- *   node scripts/send-voice-sticker.mjs --text "要说的话" --groups <GROUP_ID_2>,<GROUP_ID_1>
+ *   node scripts/send-voice-sticker.mjs --text "要说的话" --groups 200000002,200000001
  *        [--emotion sad] [--intensity 0.7] [--scene "…"] [--sticker 15,19]
  *
  * 语音走桥里同一套 renderBailianVoice（百炼 + 情绪标签 + 响度均衡）。

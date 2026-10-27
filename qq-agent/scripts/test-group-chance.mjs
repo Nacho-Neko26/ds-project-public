@@ -42,7 +42,7 @@ t('default 也坏了 → 硬兜底 20%~40%', () => {
 
 t('私聊 key（private:）→ 用 default', () => {
   const cfg = { raw: { reply: { groupChance: { default: [0.2, 0.4] } } } };
-  eq(groupChanceLabel(cfg, 'private:<OWNER_QQ>'), '20%~40%');
+  eq(groupChanceLabel(cfg, 'private:100000001'), '20%~40%');
 });
 
 console.log(`\n通过 ${pass}，失败 ${fail}`);

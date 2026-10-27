@@ -36,6 +36,37 @@ journalctl -u qq-bridge -n 30 --no-pager    # 出现「NapCat 已连接」「已
 
 ---
 
+## 只装你要的那几块（模块化安装）
+
+不想一次装全套，可以挑模块。不写 `--modules` 就是全装，跟以前一模一样。
+
+```bash
+bash deploy/install.sh --list-modules          # 看有哪些模块、各是干什么的
+sudo bash deploy/install.sh --api-key sk-xxx \
+  --qq <机器人QQ> --owner <号主QQ> --modules core,chat,memory,admin
+```
+
+| 模块 | 装了什么 |
+|---|---|
+| `core` | 连 OneBot、收发消息、加载人设、调度模型。**必装**，不写也会自动加 |
+| `chat` | 人设 `persona.md` + 语感底本 `corpus.md` + 群聊接话规则 |
+| `memory` | 长期记忆、好感度、认人档案、滚动摘要、群聊习惯 |
+| `knowledge` | 群知识库（群里的梗、称呼、黑话，每轮注入） |
+| `voice` | TTS 发语音条、ASR 听语音、点歌翻唱（要机器上另跑 3911/3912 两个服务） |
+| `stickers` | 表情包索引、主动配图、黄脸模仿 |
+| `admin` | `#` 指令、撤回禁言、余额提醒 |
+| `proactive` | 主动开口、每日问候、睡前收尾、发说说 |
+| `localpc` | 本机互通：把文件拉到号主电脑、交给本机 dsh 干活再传回来 |
+| `fun` | 点歌、戳一戳、情绪引擎、定时提醒 |
+
+**没选的模块会怎么样**：`config.json` 里对应的开关写成 `false`，它用不到的文档和可选服务脚本不会被拷过去。
+源码 `src/` 一个文件都不删——`index.mjs` 是静态 import 全部模块的，删了直接起不来，所以模块化做在配置层而不是代码层。
+
+模块清单在 [`deploy/modules.json`](deploy/modules.json)，想加自己的模块改那个文件就行（一条 `overrides` + 一条 `assets`）。
+
+
+---
+
 ## 仓库结构
 
 ```

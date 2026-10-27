@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # 溟月 QQ 机器人 · 一键部署（Ubuntu 22.04 / Debian 12，root 执行）
 #
-#   bash deploy/install.sh --qq <BOT_QQ> --owner <OWNER_QQ> --api-key sk-xxx
+#   bash deploy/install.sh --qq 100000002 --owner 100000001 --api-key sk-xxx
 #
 # 做六件事：装 Node22+Docker → 部署桥 → 装 DeepSeek Harness → 配 NapCat → 起服务 → 打印扫码指引
 # 幂等：重复跑不会弄坏已有数据（workspace/ 下已有档案不会被覆盖）
 set -euo pipefail
 
 # ---------- 默认参数（命令行可覆盖）----------
-QQ_ACCOUNT="<BOT_QQ>"
-OWNER_UID="<OWNER_QQ>"
+# QQ 号和号主号故意不设默认值：留着别人的号最容易部署完发现登错人、白名单也错。
+QQ_ACCOUNT=""
+OWNER_UID=""
+MODULES="all"          # all = 全装；否则逗号分隔的模块 id
 API_KEY=""
 OFFICIAL_KEY=""        # 可选：官方 key，只用于查余额（中转 key 查官方余额会 401）
 DEST="/root/qq-agent"
@@ -27,9 +29,13 @@ usage() {
   --api-key <sk-xxx>     DeepSeek API Key（也可 --api-key - 从 stdin 读，或设环境变量 DEEPSEEK_API_KEY）
 
 可选:
+  --modules <列表>       装哪些功能模块，逗号分隔；不填 = 全装（跟以前一样）
+                         可选值见 --list-modules，例如 --modules core,chat,memory,admin
+                         core 总是会装上。没选的模块会在 config.json 里关掉，并裁掉它用不到的文档
+  --list-modules         只打印模块清单，不安装
   --official-key <sk-xxx> 可选。官方 key，只用于查账户余额；不填就用 --api-key 查（走中转时查不到）
-  --qq <QQ号>            机器人 QQ 号，默认 <BOT_QQ>
-  --owner <QQ号>         号主 QQ 号（唯一能命令她的人），默认 <OWNER_QQ>
+  --qq <QQ号>            机器人 QQ 号。不填就现场问（没有默认值，避免误部署到别人的号上）
+  --owner <QQ号>         号主 QQ 号（唯一能命令她的人）。不填就现场问
   --dest <路径>          桥安装目录，默认 /root/qq-agent
   --napcat-dir <路径>    NapCat 目录，默认 /root/napcat
   --dsh-version <版本>   DSH 版本，默认 0.2.1-rc.2（改了要先在测试机验证）
@@ -39,10 +45,25 @@ usage() {
 EOF
 }
 
+list_modules() {
+  node -e '
+    const fs = require("fs");
+    const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    for (const [id, v] of Object.entries(m)) {
+      if (id.startsWith("_")) continue;
+      const tag = v.required ? "（必装）" : "";
+      console.log(`  ${id.padEnd(12)}${tag} ${v.title}`);
+      console.log(`  ${" ".repeat(12)}${v.desc}`);
+    }
+  ' "$REPO_DIR/deploy/modules.json"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --qq) QQ_ACCOUNT="$2"; shift 2 ;;
     --owner) OWNER_UID="$2"; shift 2 ;;
+    --modules) MODULES="$2"; shift 2 ;;
+    --list-modules) list_modules; exit 0 ;;
     --api-key) API_KEY="$2"; shift 2 ;;
     --official-key) OFFICIAL_KEY="$2"; shift 2 ;;
     --dest) DEST="$2"; shift 2 ;;
@@ -74,7 +95,38 @@ if [[ -z "$API_KEY" ]]; then
   fi
 fi
 [[ "$API_KEY" == sk-* ]] || die "API Key 看起来不对（应以 sk- 开头）"
+
+# QQ 号与号主号没有默认值：问到为止，总比装完发现登的是别人的号强
+if [[ -z "$QQ_ACCOUNT" ]]; then
+  read -r -p "机器人 QQ 号: " QQ_ACCOUNT
+fi
+[[ "$QQ_ACCOUNT" =~ ^[0-9]{5,12}$ ]] || die "机器人 QQ 号不像 QQ 号：$QQ_ACCOUNT"
+if [[ -z "$OWNER_UID" ]]; then
+  read -r -p "号主 QQ 号（唯一能命令她的人）: " OWNER_UID
+fi
+[[ "$OWNER_UID" =~ ^[0-9]{5,12}$ ]] || die "号主 QQ 号不像 QQ 号：$OWNER_UID"
+
+# 模块清单：默认全装；指定了就检查 id 都存在，且把 core 补进去
+[[ -f "$REPO_DIR/deploy/modules.json" ]] || die "找不到 deploy/modules.json"
+if [[ "$MODULES" == "all" ]]; then
+  SELECTED="$(node -e 'const m=require(process.argv[1]);console.log(Object.keys(m).filter(k=>!k.startsWith("_")).join(","))' "$REPO_DIR/deploy/modules.json")"
+else
+  SELECTED="$MODULES"
+fi
+node -e '
+  const fs = require("fs");
+  const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const sel = process.argv[2].split(",").map(s => s.trim()).filter(Boolean);
+  const known = Object.keys(m).filter(k => !k.startsWith("_"));
+  const bad = sel.filter(s => !known.includes(s));
+  if (bad.length) { console.error("未知模块: " + bad.join(", ") + "\n可选: " + known.join(", ")); process.exit(1); }
+  if (!sel.includes("core")) sel.unshift("core");
+  console.log(sel.join(","));
+' "$REPO_DIR/deploy/modules.json" "$SELECTED" > /tmp/.mq-modules \
+  || die "模块名有错，用 --list-modules 看可选值"
+SELECTED="$(cat /tmp/.mq-modules)"; rm -f /tmp/.mq-modules
 ok "仓库: $REPO_DIR"
+ok "模块: $SELECTED"
 
 # ---------- 1. Node 22 ----------
 step "1/7 Node.js 22"
@@ -154,6 +206,14 @@ if [[ -d "$REPO_DIR/qq-agent/workspace" ]]; then
 fi
 mkdir -p "$DEST"/{workspace/incoming,logs,data}
 
+# config.json 是「这台机器自己的配置」，公开仓里不发它，只有通用模板 config.example.json。
+# 已有就留着（重复安装不能冲掉现场白名单），没有就从模板生成一份。
+if [[ ! -f "$DEST/config/config.json" ]]; then
+  [[ -f "$DEST/config/config.example.json" ]] || die "缺 config/config.example.json，没法生成配置"
+  cp -a "$DEST/config/config.example.json" "$DEST/config/config.json"
+  ok "config.json 由 config.example.json 生成"
+fi
+
 # token 与 QQ 号写进配置（配置里的 token 是占位符，真 token 只在宿主机上）
 WS_TOKEN="${WS_TOKEN:-$(grep -oP '(?<=token: ")[^"]+' "$NAPCAT_DIR/docker-compose.yml" 2>/dev/null || true)}"
 [[ -n "$WS_TOKEN" ]] || WS_TOKEN="$(openssl rand -hex 12)"
@@ -169,6 +229,81 @@ if (!cfg.trusted || !cfg.trusted.length) cfg.trusted = [qq, owner];
 fs.writeFileSync(p, JSON.stringify(cfg, null, 4) + "\n");
 ' "$DEST/config/config.json" "$WS_TOKEN" "$QQ_ACCOUNT" "$OWNER_UID" "$WS_PORT"
 ok "config.json 已写入（ws:$WS_PORT）"
+
+# 按选中的模块改开关、裁资产。
+# 注意：只改 overrides 里点名的键，没点名的段一个字都不动——否则会把别人手工调的参数冲掉。
+# 没选的模块：它 overrides 里的每个 X.enabled 一律写 false；不写的话模块默认值是 true，等于没关。
+# 全装时整段不改：全装就该跟不加 --modules 之前一模一样（比如 memeHub 默认是关的，不该被打开）。
+if [[ "$MODULES" != "all" ]]; then
+node -e '
+  const fs = require("fs");
+  const [modsPath, cfgPath, selArg, destArg] = process.argv.slice(1);
+  const mods = JSON.parse(fs.readFileSync(modsPath, "utf8"));
+  const sel = selArg.split(",");
+  const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+
+  const setPath = (obj, dotted, val) => {
+    const parts = dotted.split(".");
+    let cur = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (typeof cur[parts[i]] !== "object" || cur[parts[i]] === null) cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = val;
+  };
+
+  // 先全部关掉（只关 overrides 里出现过的 .enabled 键），再按选中项逐个打开
+  const allEnabledKeys = new Set();
+  for (const [id, v] of Object.entries(mods)) {
+    if (id.startsWith("_") || !v.overrides) continue;
+    for (const k of Object.keys(v.overrides)) if (k.endsWith(".enabled")) allEnabledKeys.add(k);
+  }
+  for (const k of allEnabledKeys) setPath(cfg, k, false);
+  for (const id of sel) {
+    const v = mods[id];
+    if (!v || !v.overrides) continue;
+    for (const [k, val] of Object.entries(v.overrides)) setPath(cfg, k, val);
+  }
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 4) + "\n");
+  console.log("  ✓ 模块开关已写入 config.json");
+' "$REPO_DIR/deploy/modules.json" "$DEST/config/config.json" "$SELECTED" "$DEST" \
+  || die "写模块开关失败"
+else
+  ok "全模块安装：config.json 保持模板原样，不额外改开关"
+fi
+
+# 裁资产：只装选中模块 assets 里列的文档和可选服务脚本。
+# persona/persona.md 永远留着——agent.mjs 缺了它会直接抛「人设文件不存在」。
+# src/ 一个文件都不删：index.mjs 静态 import 了全部模块，删了就起不来。
+# 全装（没指定 --modules）时整段跳过：既然要一模一样的完整版，就没有该裁的东西。
+if [[ "$MODULES" == "all" ]]; then
+  ok "全模块安装，文档/脚本一个不裁"
+else
+node -e '
+  const fs = require("fs"), path = require("path");
+  const [modsPath, selArg, destArg] = process.argv.slice(1);
+  const mods = JSON.parse(fs.readFileSync(modsPath, "utf8"));
+  const sel = selArg.split(",");
+  const keep = new Set(["persona/persona.md"]);
+  for (const id of sel) {
+    const v = mods[id];
+    if (v && Array.isArray(v.assets)) for (const a of v.assets) keep.add(a);
+  }
+  let removed = 0;
+  for (const f of fs.readdirSync(path.join(destArg, "docs"))) {
+    if (!f.endsWith(".md")) continue;
+    const rel = "docs/" + f;
+    if (!keep.has(rel)) { fs.rmSync(path.join(destArg, rel), { force: true }); removed++; }
+  }
+  for (const f of fs.readdirSync(path.join(destArg, "scripts"))) {
+    if (!f.endsWith(".py")) continue;
+    const rel = "scripts/" + f;
+    if (!keep.has(rel)) { fs.rmSync(path.join(destArg, rel), { force: true }); removed++; }
+  }
+  console.log("  ✓ 裁掉 " + removed + " 个用不到的文档/脚本");
+' "$REPO_DIR/deploy/modules.json" "$SELECTED" "$DEST" \
+  || die "裁资产失败"
+fi
 
 # 语音/听语音靠这台机器上的两个本地服务（TTS 3911 / ASR 3912），新机器默认没有。
 # 没有就关掉对应开关：聊天天照常，只是不发语音条、听不懂语音消息——总比每轮报错强。

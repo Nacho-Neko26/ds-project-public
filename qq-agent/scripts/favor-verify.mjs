@@ -19,7 +19,7 @@ rows.sort((a, b) => b.favor - a.favor);
 for (const r of rows) console.log(`${r.uid}\t好感 ${r.favor}\t信任 ${r.trust}\t${r.stage}（第${r.idx}档）`);
 
 console.log('\n=== 卡片渲染（号主）===');
-const owner = m['<OWNER_QQ>'];
+const owner = m['100000001'];
 console.log(F.renderFavorCard(owner.favor, F.qualifiedFavor(owner)));
 
 console.log('\n=== 双轴行为 ===');

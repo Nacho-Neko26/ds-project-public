@@ -63,7 +63,7 @@ function call(action, params) {
 }
 
 const head = await call('send_private_msg', {
-  user_id: <OWNER_QQ>,
+  user_id: 100000001,
   message: [{ type: 'text', data: { text: legend } }],
 });
 console.log('legend', JSON.stringify(head.data || head));
@@ -71,7 +71,7 @@ console.log('legend', JSON.stringify(head.data || head));
 for (const c of clips) {
   await new Promise((r) => setTimeout(r, 1200));
   const res = await call('send_private_msg', {
-    user_id: <OWNER_QQ>,
+    user_id: 100000001,
     message: [{ type: 'record', data: { file: c.path } }],
   });
   console.log(c.mood, JSON.stringify(res.data || res));

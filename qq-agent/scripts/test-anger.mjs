@@ -144,8 +144,8 @@ console.log('\n档案读写');
 t('档案能存能读', () => {
   const dir = '/tmp/anger-test-workspace';
   const data = { people: { 1: { nickFor: '主人' } } };
-  saveProfiles(dir, 'group:<GROUP_ID_2>', data);
-  const back = loadProfiles(dir, 'group:<GROUP_ID_2>');
+  saveProfiles(dir, 'group:200000002', data);
+  const back = loadProfiles(dir, 'group:200000002');
   assert.deepEqual(back.people[1].nickFor, '主人');
 });
 

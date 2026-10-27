@@ -41,7 +41,7 @@ function mkImg(cfg, bytes = null) {
   return file;
 }
 
-const G = 'group:<GROUP_ID_1>';
+const G = 'group:200000001';
 const mkMeta = (uid, extra = {}) => ({ chatKey: G, uid, name: `u${uid}`, isGroup: true, ...extra });
 
 console.log('43 digest 去重');
@@ -133,7 +133,7 @@ t('两个人不够，且私聊不出斗图', () => {
   const bytes = Buffer.from('two-only');
   for (const uid of [21, 22]) ingestImage({ cfg, file: mkImg(cfg, bytes), meta: mkMeta(uid) });
   eq(planMemeAction({ cfg, chatKey: G, now: Date.now(), rand: () => 0 }).formation, null);
-  eq(planMemeAction({ cfg, chatKey: 'private:<OWNER_QQ>', now: Date.now(), rand: () => 0 }).lines.length, 0);
+  eq(planMemeAction({ cfg, chatKey: 'private:100000001', now: Date.now(), rand: () => 0 }).lines.length, 0);
 });
 
 console.log('47 连发');

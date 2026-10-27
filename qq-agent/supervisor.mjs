@@ -10,7 +10,7 @@ import path from 'node:path';
 
 const ROOT = 'C:\\Users\\14381\\Documents\\deepseek-harness\\default-workspace\\qq-agent';
 const NODE = 'C:\\Users\\14381\\.dsh-runtime\\node\\node.exe';
-const QQ = '<BOT_QQ>';
+const QQ = '100000002';
 const LOG = path.join(ROOT, 'logs', 'supervisor.log');
 
 function log(...a) {

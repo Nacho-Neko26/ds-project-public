@@ -37,7 +37,7 @@ function call(action, params) {
 }
 
 await call('send_private_msg', {
-  user_id: <OWNER_QQ>,
+  user_id: 100000001,
   message: [{ type: 'text', data: { text: '按你说的设好了：日常=融合第 2 条，困=融合第 3 条。两条确认：' } }],
 });
 
@@ -45,7 +45,7 @@ for (const [name, out] of [['日常', A], ['困', B]]) {
   await new Promise((r) => setTimeout(r, 1200));
   const file = `/app/voice/${out.file.split('/').pop()}`;
   const res = await call('send_private_msg', {
-    user_id: <OWNER_QQ>,
+    user_id: 100000001,
     message: [{ type: 'record', data: { file } }],
   });
   console.log(name, JSON.stringify(res.data || res));

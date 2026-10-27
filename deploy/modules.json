@@ -1,0 +1,95 @@
+{
+  "_说明": "模块清单。install.sh --modules core,chat,voice 时按这里的 overrides 改 config.json，按 assets 决定留哪些文档/服务脚本。core 必选，其余可不选。",
+  "_不开的模块怎么关": "每个模块的 overrides 里凡是 `X.enabled` 的键，没选这个模块就写成 false；其余键（如 music.mode）回退到该模块的关闭值。",
+  "_不动的文件": "src/ 和 persona/persona.md 永远不删——agent.mjs:176 缺人设文件会直接抛错。裁资产只裁 docs/*.md 和 scripts/*.py。",
+
+  "core": {
+    "title": "核心桥",
+    "desc": "连 OneBot、收发消息、加载人设、调度模型。关掉就什么都不剩，所以不允许不选。",
+    "required": true,
+    "overrides": {},
+    "assets": []
+  },
+  "chat": {
+    "title": "人格与日常对话",
+    "desc": "人设 persona.md + 语感底本 corpus.md + 群聊接话规则。不选就只剩照本宣科，语气和分寸全没了。",
+    "overrides": {
+      "persona.corpus.enabled": true
+    },
+    "assets": ["persona/persona.md", "persona/corpus.md", "docs/qq-chat-rules.md"]
+  },
+  "memory": {
+    "title": "长期记忆与认人",
+    "desc": "长期记忆、好感度、认人档案、滚动摘要、群聊习惯。不选就记不住谁是谁，也不会有隔天还记着的事。",
+    "overrides": {
+      "memory.enabled": true,
+      "summary.enabled": true,
+      "habits.enabled": true
+    },
+    "assets": ["docs/qq-memory-knowledge.md"]
+  },
+  "knowledge": {
+    "title": "群知识库",
+    "desc": "把群里的梗、称呼、黑话整理成知识库，每轮注入。跟 memory 分开：这个只管「群里这词什么意思」。",
+    "overrides": {
+      "digest.enabled": true
+    },
+    "assets": ["docs/qq-memory-knowledge.md"]
+  },
+  "voice": {
+    "title": "语音与翻唱",
+    "desc": "TTS 发语音条、ASR 听语音、点歌翻唱。要机器上另跑 3911/3912 两个本地服务，没有它们装了也只是关着。",
+    "overrides": {
+      "voice.enabled": true,
+      "asr.enabled": true
+    },
+    "assets": ["docs/qq-voice.md", "scripts/tts-service.py", "scripts/asr-service.py", "scripts/voice-enroll.py"]
+  },
+  "stickers": {
+    "title": "表情与配图",
+    "desc": "表情包索引、主动配图、黄脸模仿、表情接力。没素材包也能开，只是图少。",
+    "overrides": {
+      "expression.enabled": true,
+      "expression.memeHub.enabled": true
+    },
+    "assets": ["docs/stickers-INSTALL.md"]
+  },
+  "admin": {
+    "title": "指令与群管",
+    "desc": "# 开头的工作项、撤回、禁言、余额提醒。不选就只剩自然语言闲聊，一条指令都不认。",
+    "overrides": {
+      "admin.enabled": true,
+      "balance.enabled": true
+    },
+    "assets": ["docs/qq-commands.md"]
+  },
+  "proactive": {
+    "title": "主动开口",
+    "desc": "主动找你说话、每日问候、睡前收尾、内在动机、发说说。不选就只在被叫的时候出现。",
+    "overrides": {
+      "selfwake.enabled": true,
+      "greeting.enabled": true,
+      "closure.enabled": true,
+      "purpose.enabled": true,
+      "qzone.enabled": true
+    },
+    "assets": []
+  },
+  "localpc": {
+    "title": "本机互通",
+    "desc": "把文件拉到号主电脑、交给本机 dsh 干活再传回来、在那边跑 PowerShell。注意：这一块代码没有开关，装上桥就一直监听；真正的闸门是本机装不装 remote-exec。",
+    "overrides": {},
+    "assets": []
+  },
+  "fun": {
+    "title": "玩法",
+    "desc": "点歌、戳一戳、情绪引擎、定时提醒。不选照样能聊天，只是少了这些花样。",
+    "overrides": {
+      "music.enabled": true,
+      "poke.enabled": true,
+      "emotion.enabled": true,
+      "reminders.enabled": true
+    },
+    "assets": []
+  }
+}

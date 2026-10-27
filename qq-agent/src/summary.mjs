@@ -86,7 +86,7 @@ export async function maybeSummarize({ cfg, runner, history, chatKey, note = log
   const rows = readJsonl(file, 100000);
   const st = loadState(cfg, chatKey);
   // 换天归档会把 history 清空，旧 covered（覆盖到第几条）就比实际行数还大，
-  // 不重置的话 pending 永远为负、摘要从此再也不触发（2026-10-25 修，群 <GROUP_ID_2> 中招）。
+  // 不重置的话 pending 永远为负、摘要从此再也不触发（2026-10-25 修，群 200000002 中招）。
   if (Number(st.covered || 0) > rows.length) {
     st.covered = 0;
     saveState(cfg, chatKey, st);

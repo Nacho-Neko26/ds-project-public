@@ -7,26 +7,10 @@
         "token": "<ONEBOT_WS_TOKEN>"
     },
     "lists": {
-        "privateAllow": [
-            0,
-            <MEMBER_QQ_3>,
-            <MEMBER_QQ_2>
-        ],
-        "groupAllow": [
-            {
-                "groupId": <GROUP_ID_1>,
-                "mode": "full"
-            },
-            {
-                "groupId": <GROUP_ID_2>,
-                "mode": "full"
-            }
-        ]
+        "privateAllow": [],
+        "groupAllow": []
     },
-    "trusted": [
-        0,
-        0
-    ],
+    "trusted": [],
     "reply": {
         "silenceToken": "<SKIP>",
         "splitShortLines": true,
@@ -42,8 +26,8 @@
             "group": 3000
         },
         "rateLimit": {
-            "perChatPerMinute": 6,
-            "globalPerMinute": 20
+            "perChatPerMinute": 20,
+            "globalPerMinute": 60
         },
         "ackOnSlow": {
             "enabled": false,
@@ -51,18 +35,23 @@
             "text": "等一下…"
         },
         "groupChance": {
-            "<GROUP_ID_2>": [
-                0.2,
-                0.4
-            ],
-            "<GROUP_ID_1>": [
-                0.6,
-                0.8
-            ],
             "default": [
                 0.2,
                 0.4
+            ],
+            "200000002": [
+                0.2,
+                0.4
+            ],
+            "200000001": [
+                0.6,
+                0.8
             ]
+        },
+        "wakeWindowMinutes": 5,
+        "mute": {
+            "enabled": true,
+            "ms": 120000
         }
     },
     "selfwake": {
@@ -76,9 +65,10 @@
         "backoffPerUnanswered": 0.6,
         "replyWindowMinutes": 10,
         "dailyMax": 4,
-        "quietStartHour": 0,
-        "quietEndHour": 7,
-        "maxChars": 120
+        "quietStartHour": null,
+        "quietEndHour": null,
+        "maxChars": 120,
+        "quietEnabled": false
     },
     "summary": {
         "enabled": true,
@@ -164,7 +154,7 @@
         "profile": "headless",
         "taskTimeoutMs": 180000,
         "maxConcurrent": 2,
-        "cwd": "workspace",
+        "cwd": "/root/qq-agent",
         "telemetry": "off",
         "jsonEvents": true,
         "commandPermissionMode": "workspace-write",
@@ -184,15 +174,8 @@
     "persona": {
         "file": "persona/persona.md",
         "discloseWhenAsked": true,
-        "ownerUids": [
-            0
-        ],
-        "aliases": [
-            "鲸鱼娘",
-            "小鲸鱼",
-            "哦鲸鲸",
-            "DeepSeek酱"
-        ],
+        "ownerUids": [],
+        "aliases": [],
         "character": {
             "name": "溟月",
             "selfRef": "我",
@@ -247,7 +230,7 @@
     },
     "voice": {
         "enabled": true,
-        "voice": "zh-CN-XiaoyiNeural",
+        "voice": "",
         "style": "bailian",
         "rate": "+0%",
         "pitch": "+0Hz",
@@ -279,8 +262,8 @@
                 "困": ""
             }
         },
-        "dir": "/root/napcat/data/voice",
-        "containerDir": "/app/voice",
+        "dir": "/root/snowluma/data/voice",
+        "containerDir": "/app/data/voice",
         "maxChars": 60,
         "maxSeconds": 10
     },
@@ -305,5 +288,35 @@
             "reviewPoolEnabled": true,
             "reviewPoolMinHits": 1
         }
+    },
+    "purpose": {
+        "enabled": true,
+        "tickMs": 60000,
+        "gapMinMs": 9000000,
+        "gapMaxMs": 18000000,
+        "initialDelayMinMs": 1800000,
+        "dailyMax": 4,
+        "quietStartMin": null,
+        "quietEndMin": null,
+        "idleThresholdMs": 1800000,
+        "materialWindowHours": 72,
+        "minMaterials": 2,
+        "maxGoals": 24,
+        "driveHalfLifeMs": 28800000,
+        "driveBaseline": 0.4,
+        "quietEnabled": false
+    },
+    "greeting": {
+        "enabled": true,
+        "at": "08:00",
+        "jitterMinutes": 20,
+        "hint": ""
+    },
+    "closure": {
+        "enabled": true,
+        "quietMinutes": 8,
+        "cooldownMinutes": 25,
+        "maxFinalChars": 30,
+        "shortChars": 6
     }
 }

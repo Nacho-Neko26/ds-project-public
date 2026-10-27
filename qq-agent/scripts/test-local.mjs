@@ -68,9 +68,9 @@ console.log('\n[4] 排队与回执');
 const p = ensureLocalDirs(cfg);
 ok('目录都建好了', ['queue', 'done', 'files', 'sent'].every((d) => fs.existsSync(path.join(p.dir, d))));
 const input = write(path.join(work, 'incoming', 'files', '报告.md'), '内容');
-const job = enqueueLocal(cfg, { task: '把它转成 pdf', chat: 'private:<OWNER_QQ>', by: <OWNER_QQ>, file: { path: input, name: '报告.md' } });
+const job = enqueueLocal(cfg, { task: '把它转成 pdf', chat: 'private:100000001', by: 100000001, file: { path: input, name: '报告.md' } });
 ok('任务有 id', !!job.id);
-eq('会话记下了', job.chat, 'private:<OWNER_QQ>');
+eq('会话记下了', job.chat, 'private:100000001');
 ok('输入文件复制进 files/', !!job.file && fs.existsSync(job.file.path));
 eq('复制件保留中文名', job.file.name, '报告.md');
 ok('输出目录给了绝对路径', /local-/.test(job.out) && job.out.includes('local-' + job.id));
@@ -79,7 +79,7 @@ ok('sent 里留了回执', fs.existsSync(path.join(p.sent, `${job.id}.json`)));
 eq('队列深度 1', localQueueDepth(cfg), 1);
 
 console.log('\n[5] 没有输入文件也能排');
-const job2 = enqueueLocal(cfg, { task: '算一下 1+1', chat: 'group:<GROUP_ID_1>' });
+const job2 = enqueueLocal(cfg, { task: '算一下 1+1', chat: 'group:200000001' });
 eq('file 为 null', job2.file, null);
 eq('队列深度 2', localQueueDepth(cfg), 2);
 

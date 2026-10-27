@@ -1,7 +1,7 @@
 import { loadConfig } from '../src/config.mjs';
 
 const cfg = loadConfig();
-const group = Number(process.argv[2] || <GROUP_ID_2>);
+const group = Number(process.argv[2] || 200000002);
 const url = new URL(cfg.raw.napcat.wsUrl);
 if (cfg.raw.napcat.token) url.searchParams.set('access_token', cfg.raw.napcat.token);
 const ws = new WebSocket(url);

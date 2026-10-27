@@ -4,8 +4,8 @@
  * workspace/profiles/_favor-shared.json（2026-10-25 用户要求）。
  *
  * 用法（在 qq-agent 目录下）：
- *   node scripts/unify-favor.mjs                 # 默认以 group:<GROUP_ID_2>（涛涛阿姨的爱心小窝）为准
- *   node scripts/unify-favor.mjs group:<GROUP_ID_1> # 换基准群
+ *   node scripts/unify-favor.mjs                 # 默认以 group:200000002（涛涛阿姨的爱心小窝）为准
+ *   node scripts/unify-favor.mjs group:200000001 # 换基准群
  *   node scripts/unify-favor.mjs --dry           # 只看结果，不写文件
  *
  * 只搬好感相关字段（见 SHARED_FAVOR_FIELDS），不碰昵称/记事本/怒气这些。
@@ -20,7 +20,7 @@ const FIELDS = [
 
 const args = process.argv.slice(2);
 const dry = args.includes('--dry');
-const seedKey = args.find((a) => a.startsWith('group:')) || 'group:<GROUP_ID_2>';
+const seedKey = args.find((a) => a.startsWith('group:')) || 'group:200000002';
 
 const root = process.cwd();
 const profilesDir = path.join(root, 'workspace', 'profiles');

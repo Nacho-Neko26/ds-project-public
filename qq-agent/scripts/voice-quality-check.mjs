@@ -144,7 +144,7 @@ if (!process.argv.includes('--send')) {
   process.exit(0);
 }
 
-const target = Number(process.env.QQ_TARGET || <OWNER_QQ>);
+const target = Number(process.env.QQ_TARGET || 100000001);
 const url = new URL(cfg.raw.napcat.wsUrl);
 if (cfg.raw.napcat.token) url.searchParams.set('access_token', cfg.raw.napcat.token);
 const ws = new WebSocket(url);

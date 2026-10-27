@@ -441,7 +441,7 @@ async function slimForVision(file, ffmpeg = 'ffmpeg') {
 
 /**
  * 群聊「没人点名」时的主动接话概率文案。
- * config.json → reply.groupChance：{ default: [0.2, 0.4], '<GROUP_ID_2>': [0.5, 0.7] }
+ * config.json → reply.groupChance：{ default: [0.2, 0.4], '200000002': [0.5, 0.7] }
  * 按群号覆盖，没配就回落 default；配坏了也回落，不报错。
  */
 export function groupChancePair(cfg, chatKey, boost = false) {
@@ -507,7 +507,7 @@ export function pickGroupMessage({
 
 /** 组装送给模型的一轮输入 */
 export function buildPrompt({
-  cfg, chat, sender, newLines, history, trusted, extra, state, anger, favor, notebook, soothe, diary, habits, memory, balance, balanceFact, summary, backtrack, ambient, identity, speakers,
+  cfg, chat, sender, newLines, history, trusted, extra, state, anger, favor, notebook, soothe, diary, habits, memory, balance, balanceFact, summary, backtrack, brief, ambient, identity, speakers,
 }) {
   const where = chat.kind === 'group'
     ? `群聊「${chat.title}」（群里还有别人，你说的话所有人都看得到）`
@@ -661,6 +661,10 @@ export function buildPrompt({
 
   if (backtrack) {
     parts.push(`【翻旧日记】\n${backtrack}`);
+  }
+
+  if (brief) {
+    parts.push(`【今天早些时候】（你自己每半小时记下的回忆。这段比特上面聊天记录早，已经不在里面了）\n${brief}`);
   }
 
   if (ambient) parts.push(ambient);

@@ -3,7 +3,7 @@
 import cfg from "../src/config.mjs";
 const wsUrl = process.env.ONEBOT_URL || cfg.napcat.wsUrl;
 const token = process.env.ONEBOT_TOKEN || cfg.napcat.token;
-const target = Number(process.env.QQ_TARGET || <OWNER_QQ>);
+const target = Number(process.env.QQ_TARGET || 100000001);
 const text = process.env.NOTIFY_TEXT || '主人，我要下线升级一下，等会儿回来，可能会有点不一样哦';
 
 const url = new URL(wsUrl);

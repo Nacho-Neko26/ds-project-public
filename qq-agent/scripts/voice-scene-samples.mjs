@@ -3,7 +3,7 @@
  * 跑完把每条的 instruction 打出来，方便核对拼接结果。
  *
  *   node scripts/voice-scene-samples.mjs            # 只渲染，打印指令
- *   node scripts/voice-scene-samples.mjs --send     # 再发到指定 QQ（默认 <OWNER_QQ>）
+ *   node scripts/voice-scene-samples.mjs --send     # 再发到指定 QQ（默认 100000001）
  */
 import { loadConfig } from '../src/config.mjs';
 import { renderBailianVoice, composeInstruction } from '../src/voice.mjs';
@@ -59,7 +59,7 @@ if (!process.argv.includes('--send')) {
 }
 
 // —— 发到一个私聊里对比听 ——
-const target = Number(process.env.QQ_TARGET || <OWNER_QQ>);
+const target = Number(process.env.QQ_TARGET || 100000001);
 const url = new URL(cfg.raw.napcat.wsUrl);
 if (cfg.raw.napcat.token) url.searchParams.set('access_token', cfg.raw.napcat.token);
 const ws = new WebSocket(url);

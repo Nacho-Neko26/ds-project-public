@@ -24,7 +24,7 @@ const DEFAULTS = {
     // 慢回复时先垫一句（中性文案，想换成角色口吻就改这里）
     ackOnSlow: { enabled: false, afterMs: 20000, text: '等一下…' },
     // 群聊里「没人点名、话题也没戳到自己」时的主动接话概率。
-    // default 兜底；想给某个群单独设就写群号：{ default: [0.2, 0.4], '<GROUP_ID_2>': [0.5, 0.7] }
+    // default 兜底；想给某个群单独设就写群号：{ default: [0.2, 0.4], '200000002': [0.5, 0.7] }
     groupChance: { default: [0.2, 0.4] },
     // 2026-10-28 用户定：「被 @ 之后 N 分钟内的消息也跟着喂」，默认 5 分钟。
     // 窗口内群里谁说的话都会进模型（但她不一定要回）；0 = 关掉这个窗口。
@@ -118,7 +118,7 @@ const DEFAULTS = {
   persona: {
     file: 'persona/persona.md',
     discloseWhenAsked: true,
-    ownerUids: [<OWNER_QQ>],
+    ownerUids: [100000001],
     // 语料库：按当前情绪档抽几条骨架注入每轮 prompt（不抽 I3「饭」栏，那栏会把讨饭禁句顶回来）
     corpus: {
       enabled: true,

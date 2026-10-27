@@ -46,7 +46,7 @@ console.log('登录:', JSON.stringify(login.data || login));
 const status = await call('get_status', {});
 console.log('状态:', JSON.stringify(status.data || status));
 
-const target = Number(process.env.QQ_TARGET || <OWNER_QQ>);
+const target = Number(process.env.QQ_TARGET || 100000001);
 if (process.argv.includes('--send')) {
   const r = await call('send_private_msg', {
     user_id: target,

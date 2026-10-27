@@ -137,7 +137,7 @@ export function setGlobalNick(agentCwd, uid, override) {
 
 /**
  * 好感按「人」算，不按「群」算（2026-10-25 用户定）：
- * 同一个 QQ 号在不同群里的好感必须一致；私聊（尤其主人 <OWNER_QQ> 的私聊）各算各的。
+ * 同一个 QQ 号在不同群里的好感必须一致；私聊（尤其主人 100000001 的私聊）各算各的。
  *
  * 做法照 _nicknames.json 的老路子：把好感相关的字段单独存一份
  * workspace/profiles/_favor-shared.json，群聊读档时覆盖进去、存档时写回来。

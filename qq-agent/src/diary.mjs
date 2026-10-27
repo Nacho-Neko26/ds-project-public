@@ -89,7 +89,7 @@ export function collectDayMessages(dataDir, key) {
 const INTIMACY_TEXT = { 0: '陌生', 1: '有点印象', 2: '脸熟', 3: '熟了', 4: '很熟', 5: '特别熟' };
 
 /** 号主的 QQ：对号主固定用身份槽位里的默认昵称，不自动生成外号 */
-const OWNER_UIDS = new Set([<OWNER_QQ>]);
+const OWNER_UIDS = new Set([100000001]);
 
 // 名前的纯修饰词（「最伟大的顾鹤」→「顾鹤」，靠的是「的」；这些是兜底）
 const NICK_PREFIX = /^(?:超级|无敌|可爱|帅气|美丽|温柔|英俊|一个|一只|最|很|超|真|好|太|是|我|你|他|她|它|这|那|们|都|也|就|才|又|还)+/;

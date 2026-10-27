@@ -1,7 +1,7 @@
 import { loadConfig } from '../src/config.mjs';
 
 const cfg = loadConfig();
-const group = Number(process.argv[2] || <GROUP_ID_2>);
+const group = Number(process.argv[2] || 200000002);
 const text = process.argv[3] || '机器人，2026年诺贝尔文学奖得主是谁';
 const url = new URL(cfg.raw.napcat.wsUrl);
 if (cfg.raw.napcat.token) url.searchParams.set('access_token', cfg.raw.napcat.token);

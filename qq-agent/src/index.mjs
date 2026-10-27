@@ -26,6 +26,7 @@ import {
 import { resolveStickerPath } from './stickerfile.mjs';
 import { loadUsage, recordUse, sentRecently, uniqueRows, loadRotate, saveRotate, sampleWindow } from './sticker-usage.mjs';
 import { loadFaceUsage, recordFaces, topFaces } from './face-usage.mjs';
+import { renderBrief, createBriefWatcher } from './brief.mjs';
 import { latestDiary, ensureYesterdayDiary, dayKey, recentDiaries, compactDiaries, backtrackDiaries, renderBacktrack, lastClearDay, setLastClearDay } from './diary.mjs';
 import { readHabits, updateHabits, habitsConfig } from './habits.mjs';
 import { learnMemories, renderMemory, memoryConfig } from './memory.mjs';
@@ -3278,6 +3279,8 @@ async function handleBatch(session, batch) {
   // 逐日回溯：对方提到更早的事，就去旧日记里翻对应的段落（翻不到就算了，绝不编）
   const back = backtrackDiaries(cfg.agentCwd, batch.map((m) => m.text).join('\n'), { days: 3 });
   const backText = renderBacktrack(back.hits);
+  // 今天早些时候的滚动回忆（日记写完到现在那段空白）
+  const briefText = renderBrief(cfg.dataDir, session.key);
   if (back.hits.length) {
     note('info', `[${session.key}] 回溯日记命中 ${back.hits.map((h) => h.key).join(', ')}`);
   }
@@ -3473,6 +3476,7 @@ async function handleBatch(session, batch) {
     balance: state.balance,
     balanceFact: balanceText,
     backtrack: backText,
+    brief: briefText,
     ambient: renderAmbient(await getAmbient(cfg.agentCwd).catch(() => null)),
     extra: [
       cmdHints,
@@ -4729,6 +4733,14 @@ if (cfg.purpose?.enabled !== false) {
   note('info', `目的引擎: 开（每 ${Math.round(purposeTickMs / 1000)} 秒算一次，开不开口由它决定）`);
 } else {
   note('info', '目的引擎: 关');
+}
+
+// 今日滚动摘要：每 5 分钟巡检一次，同一会话最快 25 分钟压成一段回忆，每轮注入最近 5 条。
+// 补的是「晚上写日记」到「今天上午」中间那段空白（用户 2026-10-28 拍板要这个）。
+{
+  const briefWatcher = createBriefWatcher({ dataDir: cfg.dataDir, getRunner: () => runner, note });
+  briefWatcher.start();
+  note('info', '今日摘要: 开（同一会话最快 25 分钟压一次）');
 }
 
 // 启动时先读最近三天日记（换天时会补写昨天那篇）

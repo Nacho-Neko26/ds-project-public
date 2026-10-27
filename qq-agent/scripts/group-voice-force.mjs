@@ -17,7 +17,7 @@ import { renderBailianVoice, measureFile } from '../src/voice.mjs';
 const cfg = loadConfig();
 const v = cfg.raw.voice;
 const text = process.argv[2] || '诶……说好的饭呢，我可是一直在等你哦';
-const group = Number(process.argv[3] || <GROUP_ID_2>);
+const group = Number(process.argv[3] || 200000002);
 const emotion = process.env.EMOTION || 'gentle';
 const intensity = Number(process.env.INTENSITY || 0.6);
 const scene = process.env.SCENE || '饭桌前等饭，饿得有点委屈';

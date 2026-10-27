@@ -6,7 +6,7 @@ const cfg = loadConfig();
 const runner = new AgentRunner(cfg);
 const history = new HistoryStore(cfg.dataDir, cfg.raw.context);
 
-const who = Number(process.argv[2] ?? <OWNER_QQ>);
+const who = Number(process.argv[2] ?? 100000001);
 const text = process.argv[3] ?? '在吗，今天怎么这么安静';
 const trusted = cfg.trusted.has(who);
 
