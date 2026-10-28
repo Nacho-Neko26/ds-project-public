@@ -80,10 +80,10 @@ import {
   log, chunkText, sleep, appendJsonl, readJsonl, ensureDir, hhmm, safeFileName, splitMessages,
   splitOverlongMessage, autoSplitLong, nameHit,
 } from './util.mjs';
-import { detectSingRequest } from './sing-intent.mjs';
+import { detectSingRequest, detectSingAsk } from './sing-intent.mjs';
 import { recordIdentity, renderIdentityBlock, resolveMentions } from './identity.mjs';
 import { enqueueCover, rememberCoverJob, startCoverWatcher, ensureCoverDirs, executorOnline } from './cover.mjs';
-import { pickOnlineReply, pickOfflineReply } from './cover-reply.mjs';
+import { pickOnlineReply, pickOfflineReply, pickAskSong, pickAskNotYet } from './cover-reply.mjs';
 import { pickLocalOkReply, pickLocalMissReply } from './local-reply.mjs';
 // 本机处理（2026-10-28 用户要求）：「传输文件用本机 dsh 操作后再发回」。
 // 和翻唱同一套拉模式：桥排队 → 本机 tools/local-agent.py 来拉 → 做完把产物传回 done/。
@@ -2789,13 +2789,80 @@ async function handleBatch(session, batch) {
   // 2026-10-26 用户要求「其实只要叫你唱就行，不用指令」：
   // 没打 # 也认点唱（私聊直接说，群里要先点名），走同一条排队逻辑。
   let singCmd = '';
+  // 2026-10-28 修：点唱要看「说这句话的人」，不是这一批里最后说话的人。
+  // 16:41:12 主人喊「@你 唱歌」，16:41:25 哦鲸鲸紧跟一句，批次最后是她（130 分）
+  // → 主人的点唱被按她的分拦下，日志「翻唱被好感门槛拦下：130 < 660」。
+  // 先逐条认（每条只看自己有没有被点名，免得把别人的「唱完就散」也算进来），
+  // 一条都认不出才退回整批拼起来认（歌名拆成两条发的情况）。
+  let singFrom = null;
+  let singHit = null;
+  let askFrom = null;
+  let askHit = null;
   if (!hashLine) {
-    const said = batch.map((x) => String(x.text || '')).join(' ').trim();
-    const atMe = batch.some((x) => x.atMe || x.mentioned);
-    const hit = detectSingRequest(said, { isGroup: session.kind === 'group', atMe });
-    if (hit && parseCoverParams(hit.body).song) singCmd = `#${hit.word} ${hit.body}`;
+    const atMeAny = batch.some((x) => x.atMe || x.mentioned);
+    // 问过「想听什么」之后，同一个人 5 分钟内回的那句话就当歌名（2026-10-28）
+    const aw = session.awaitSong;
+    if (aw && Date.now() - Number(aw.at || 0) < 5 * 60_000) {
+      const m = [...batch].reverse().find((x) => Number(x.uid) === Number(aw.uid)
+        && String(x.text || '').trim()
+        && String(x.text).trim().length <= 30
+        && !/^[#＃]/.test(String(x.text).trim())
+        && !/[?？]$|吗$/.test(String(x.text).trim()));
+      if (m) {
+        session.awaitSong = null;
+        singFrom = m;
+        singHit = { body: String(m.text).trim(), word: aw.word || '翻唱', vague: false };
+      }
+    }
+    if (!singHit) {
+      for (const m of batch) {
+        const one = detectSingRequest(String(m.text || ''), {
+          isGroup: session.kind === 'group',
+          atMe: m.atMe || m.mentioned,
+        });
+        if (one) { singFrom = m; singHit = one; }
+      }
+    }
+    if (!singHit) {
+      const said = batch.map((x) => String(x.text || '')).join(' ').trim();
+      singHit = detectSingRequest(said, { isGroup: session.kind === 'group', atMe: atMeAny });
+    }
+    // 「我可以点翻唱吗」这种征求许可的：按好感度回（2026-10-28 用户定）
+    if (!singHit) {
+      for (const m of batch) {
+        const ask = detectSingAsk(String(m.text || ''), {
+          isGroup: session.kind === 'group',
+          atMe: m.atMe || m.mentioned,
+        });
+        if (ask) { askFrom = m; askHit = ask; }
+      }
+    }
+    if (!singHit && askFrom) {
+      const af = favorOf(session, Number(askFrom.uid), askFrom.name);
+      const isOwn = ownerUids2.includes(Number(askFrom.uid));
+      if (!isOwn && af.favor < SING_FAVOR()) {
+        await sendText(session, pickAskNotYet(), null);
+        note('info', `[${session.key}] ${askHit.word}征求许可被婉拒：${askFrom.name}(${askFrom.uid})`);
+        return;
+      }
+      session.awaitSong = { uid: Number(askFrom.uid), at: Date.now(), word: askHit.word };
+      await sendText(session, pickAskSong(), null);
+      note('info', `[${session.key}] ${askHit.word}征求许可：${askFrom.name}(${askFrom.uid})，先问想听什么`);
+      return;
+    }
+    // 2026-10-28 用户定：「不带歌名就问要唱什么」。
+    // 只说了「唱歌」「来一首」这种，body 会被当成歌名排进队列，然后去搜一首叫「歌」的歌失败。
+    if (singHit && singHit.vague) {
+      const who = singFrom || last;
+      session.awaitSong = { uid: Number(who.uid), at: Date.now(), word: singHit.word };
+      await sendText(session, pickAskSong(), null);
+      note('info', `[${session.key}] 点唱没给歌名（${singHit.body}），先问要唱什么：${who.name}(${who.uid})`);
+      return;
+    }
+    if (singHit && parseCoverParams(singHit.body).song) singCmd = `#${singHit.word} ${singHit.body}`;
   }
   const cmdLine = hashLine || singCmd;
+  const actor = singFrom || last;
   if (cmdLine) {
     const FIXED_COMMANDS = ['好感度', '心情', '同步', '翻唱', '清唱', '本机', '语音库', '点播'];
     const hashParsed = matchCommandLine(cmdLine) || {};
@@ -2817,14 +2884,14 @@ async function handleBatch(session, batch) {
       note('info', `[${session.key}] 群里忽略命令 #${hashName}`);
       return;
     }
-    const fx = favorOf(session, Number(last.uid), last.name);
-    const canActOnMe = isOwnerHere;
+    const fx = favorOf(session, Number(actor.uid), actor.name);
+    const canActOnMe = ownerUids2.includes(Number(actor.uid)) || isOwnerHere;
     // 主人专属指令（#关机 #清屏 #格式化 …，2026-10-27 m02704）：只有主人能用，
     // 别人说同样的话一律拒绝，不解释为什么。
     if (isOwnerCommandName(hashName)) {
       if (!canActOnMe) {
         await sendText(session, '这个只有主人能让我做', null);
-        note('info', `[${session.key}] #${hashName} 被非主人拒绝：${last.name}(${last.uid})`);
+        note('info', `[${session.key}] #${hashName} 被非主人拒绝：${actor.name}(${actor.uid})`);
         return;
       }
       const done = await runOwnerCommand({
@@ -2840,19 +2907,19 @@ async function handleBatch(session, batch) {
       }
       if (hashName === '好感度') {
         session.forceReplyUntil = 0;
-        if (session.kind === 'private' && ownerUids2.includes(Number(last.uid)) && fx.person.favor < FAVOR.sing) {
+        if (session.kind === 'private' && ownerUids2.includes(Number(actor.uid)) && fx.person.favor < FAVOR.sing) {
           fx.person.favor = FAVOR.sing;
         }
-        const card = renderFavorCard(fx.person, undefined, undefined, { isOwner: ownerUids2.includes(Number(last.uid)) });
+        const card = renderFavorCard(fx.person, undefined, undefined, { isOwner: ownerUids2.includes(Number(actor.uid)) });
         if (session.kind === 'group') {
           await ob.sendGroup(session.id, [
-            { type: 'at', data: { qq: String(last.uid) } },
+            { type: 'at', data: { qq: String(actor.uid) } },
             { type: 'text', data: { text: ` ${card}` } },
           ]);
         } else {
           await ob.sendPrivate(session.id, [{ type: 'text', data: { text: card } }]);
         }
-        note('info', `[${session.key}] 好感度查询：${last.name} ${fx.person.favor}`);
+        note('info', `[${session.key}] 好感度查询：${actor.name} ${fx.person.favor}`);
         return;
       }
       if (hashName === '心情') {
@@ -2865,13 +2932,13 @@ async function handleBatch(session, batch) {
         });
         if (session.kind === 'group') {
           await ob.sendGroup(session.id, [
-            { type: 'at', data: { qq: String(last.uid) } },
+            { type: 'at', data: { qq: String(actor.uid) } },
             { type: 'text', data: { text: ` ${card}` } },
           ]);
         } else {
           await ob.sendPrivate(session.id, [{ type: 'text', data: { text: card } }]);
         }
-        note('info', `[${session.key}] 心情查询：${last.name}`);
+        note('info', `[${session.key}] 心情查询：${actor.name}`);
         return;
       }
       if (hashName === '语音库') {
@@ -2939,7 +3006,7 @@ async function handleBatch(session, batch) {
           ? null
           : (parsed.segment || { chorus: true });
         const job = enqueueCover(cfg, {
-          song, chat: session.key, by: Number(last.uid),
+          song, chat: session.key, by: Number(actor.uid),
           mode: accapella ? 'acappella' : 'vocal',
           voice: parsed.voice || undefined,
           // 指定了音色就走 RVCMAX 引擎（它那 397 个音色，含 .yuan 加密模型）
@@ -2992,14 +3059,14 @@ async function handleBatch(session, batch) {
         }
         const recentFile = lastLocalInput(cfg, session.key);
         const job = enqueueLocal(cfg, {
-          task, chat: session.key, by: Number(last.uid), file: recentFile,
+          task, chat: session.key, by: Number(actor.uid), file: recentFile,
         });
         await sendText(session, pickLocalOkReply(), null);
         note('info', `[${session.key}] 本机活排队：${task.slice(0, 40)}（任务 ${job.id}${recentFile ? `，带文件 ${recentFile.name}` : '，无文件'}，队列 ${localQueueDepth(cfg)}）`);
         return;
       }
       if (hashName === '同步') {
-        await runWorkItem(session, batch, cmdLine, { who: last, canActOnMe: true, overFavor: fx.favor });
+        await runWorkItem(session, batch, cmdLine, { who: actor, canActOnMe, overFavor: fx.favor });
         return;
       }
     }
@@ -4361,6 +4428,10 @@ ob.on('event', (ev) => {
       if (rc) rc.text = resolved;
       enqueue(session, {
         uid, name: senderName(ev), text: resolved, time: ev.time ? ev.time * 1000 : Date.now(), messageId: rawId,
+        // 2026-10-28 修：这条消息自己有没有点到我，得跟着消息一起进缓冲。
+        // 以前没带，点唱判断读的是 m.atMe（永远 undefined），群里只能靠正文里出现「溟月」；
+        // 主人 @ 我说的「清唱认真的雪」于是被判成闲聊，模型去点原唱/念歌词，一首歌都没唱。
+        atMe: mentioned,
       });
     })();
   }

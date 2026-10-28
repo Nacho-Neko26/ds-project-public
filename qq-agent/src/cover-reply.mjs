@@ -58,6 +58,16 @@ const TAIL_MISS = [
   '晚点补给你听',
 ];
 
+// 只说要唱、没点歌名时反问的话（2026-10-28 用户定：「不带歌名就问要唱什么」）
+const ASK_SONG = [
+  '想听哪首呀',
+  '唱哪首？点个名',
+  '说来听听 想听什么',
+  '歌名给我呀',
+  '要哪首？我嗓子都开好了',
+  '哪首嘛 我等着呢',
+];
+
 // 很短的一句，偶尔用，显得没那么机械
 const SHORT_READY = ['等本鲸一下', '马上开嗓', '这就来', '稍等嘛'];
 const SHORT_MISS = ['等本鲸回来', '这会儿真唱不了', '回头补上', '人不在家呢'];
@@ -86,6 +96,25 @@ export function pickOnlineReply(word = '翻唱', { full = false } = {}) {
     full ? pick(MID_FULL) : pick(MID_READY),
     pick(full ? TAIL_FULL : TAIL_READY),
   ]);
+}
+
+// 不够格的人问「能不能点一首」时婉拒的话（2026-10-28 用户定：按好感度回）。
+// 不念分数、不提门槛线——说分数就破功。
+const ASK_NOT_YET = [
+  '还没到能点歌的交情呢 先多聊两句吧',
+  '这个得等我们再熟一点',
+  '现在还不给你点 再攒攒',
+  '想听我唱啊 那得先跟我混熟',
+];
+
+/** 不够好感的人征求点唱：婉拒（2026-10-28） */
+export function pickAskNotYet() {
+  return pick(ASK_NOT_YET);
+}
+
+/** 只说要唱、没给歌名：反问她唱哪首（2026-10-28 用户定：不带歌名就先问） */
+export function pickAskSong() {
+  return pick(ASK_SONG);
 }
 
 /** 离线：唱不了，得等人回来（不提为什么，只说她人不在） */
