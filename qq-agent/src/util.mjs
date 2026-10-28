@@ -69,6 +69,32 @@ export function nameHit(names, text) {
   return list.some((w) => s.includes(w));
 }
 
+/**
+ * 群聊里「这条消息有没有叫她」（2026-10-28 用户定，m00122）。
+ * 一般指令和 # 指令都要先叫她：真 @ 她，或者正文里出现「溟月」。
+ * 只看单条——批次里别人 @ 过她，不代表这条也算。
+ */
+export function calledByUser(names, m) {
+  if (!m) return false;
+  if (m.atMe || m.mentioned) return true;
+  return nameHit(names, String(m.text || ''));
+}
+
+/** 这条消息是不是 # 指令 */
+export function isHashLine(m) {
+  return /^\s*[#＃]/.test(String(m?.text || ''));
+}
+
+/**
+ * 群里没叫她就发的 # 指令一律剔除（2026-10-28 用户定，m00122）。
+ * 私聊原样返回；群里只留「没带 # 」的和「带了 # 且这条自己叫了她」的。
+ */
+export function gateHashLines(batch, { kind, isCalled } = {}) {
+  const list = Array.isArray(batch) ? batch : [];
+  if (kind !== 'group') return list;
+  return list.filter((m) => !isHashLine(m) || isCalled(m));
+}
+
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function safeFileName(s) {

@@ -5,7 +5,10 @@ const LEAD = /^(那|就|嗯|哎|谢谢|帮忙|帮我|请你|你|给我)?\s*(翻�
 // 明显不是点唱的说法
 const BLOCK = /不会唱|别唱|不要唱|不许唱|唱得|唱的吗|好听吗|你唱过|谁唱|什么歌|歌词|唱了多久/;
 
-const ALIAS = /溟月|鲸鱼娘|小鲸鱼|蓝鲸鱼|大肥鱼|哦鲸鲸|DeepSeek酱/i;
+// 2026-10-28 用户定（m00122）：群里「只有 @溟月 + 指令才生效」。
+// 所以群里点名只认两样：真 @ 她，或者正文里叫「溟月」。
+// 通用外号（鲸鱼娘/小鲸鱼/大肥鱼…）在群里不算叫她——群里好几个鲸鱼娘，喊的可能不是她。
+const CALL_ME = /溟月/;
 
 // 只说了「唱」没给歌名：「唱歌」「来一首」「点歌」这种 body 会被当成歌名，
 // 排进队列会去搜一首叫「歌」的歌然后失败。2026-10-28 用户定：这种情况先问要唱什么。
@@ -37,7 +40,7 @@ export function detectSingRequest(text, { isGroup = false, atMe = false } = {}) 
   // 2026-10-28 修：桥把 @ 渲染成「@你」，消息对象上又没带 atMe（enqueue 漏字段），
   // 于是「@你 清唱认真的雪」被判成闲聊、落到模型那儿，模型只会去点原唱卡片或者念两句歌词。
   // 现在开头有 @ 也算点了名（atMe 那条路同时补上）。
-  if (isGroup && !atMe && !ALIAS.test(raw) && !/^[@＠]/.test(raw)) return null;
+  if (isGroup && !atMe && !CALL_ME.test(raw) && !/^[@＠]/.test(raw)) return null;
 
   const head = stripLead(raw);
   if (!head) return null;
@@ -70,7 +73,7 @@ export function detectSingAsk(text, { isGroup = false, atMe = false } = {}) {
   if (/不(能|许|要|准|行)/.test(raw)) return null;
   if (!/翻唱|清唱|点歌|点首|点一首|点个|唱歌|唱一首|听你唱|你唱/.test(raw)) return null;
   if (!/(可以|可不可以|能不能|能否|行不行|行吗|好不好|能点|可以点|允许|让我)/.test(raw)) return null;
-  if (isGroup && !atMe && !ALIAS.test(raw)) return null;
+  if (isGroup && !atMe && !CALL_ME.test(raw)) return null;
   return { word: /清唱/.test(raw) ? '清唱' : '翻唱' };
 }
 
