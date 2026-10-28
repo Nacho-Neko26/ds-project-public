@@ -81,7 +81,7 @@ import {
 } from './favor.mjs';
 import {
   log, chunkText, sleep, appendJsonl, readJsonl, ensureDir, hhmm, safeFileName, splitMessages,
-  splitOverlongMessage, autoSplitLong, nameHit, calledByUser, isHashLine, gateHashLines,
+  splitOverlongMessage, autoSplitLong, nameHit, calledByUser, isHashLine, gateHashLines, isBridgeSwitch,
   stripCallBeforeHash,
 } from './util.mjs';
 import { detectSingRequest, detectSingAsk } from './sing-intent.mjs';
@@ -2816,10 +2816,10 @@ async function handleBatch(session, batch) {
   // 例外是桥自己的开关（#关机 #接管 #回来 #群聊）：那几个是主人拿来按电源的，
   // 卡在「先叫名字」上头会连叫醒的路都堵死，所以照旧放行。
   if (session.kind === 'group') {
-    const bridgeSwitch = /^\s*[#＃]\s*(关机|接管|回来|群聊)/;
+    const bridgeSwitch = (m) => isBridgeSwitch(m);
     const kept = gateHashLines(batch, {
       kind: 'group',
-      isCalled: (m) => bridgeSwitch.test(String(m.text || '')) || calledByName(cfg, m),
+      isCalled: (m) => bridgeSwitch(m) || calledByName(cfg, m),
     });
     if (!kept.length) {
       // 一条都没叫她的 # 指令：整批当没看见，连模型都不叫——不烧 token、不吭声、不留痕。
@@ -2953,7 +2953,7 @@ async function handleBatch(session, batch) {
   // 2026-10-28 用户定（m00122）：群里打 # 指令也得先叫她。
   // 逐条挑「带 # 且这条自己叫了她」的那种；私聊不设这道门。
   const hashLine = batch
-    .filter((x) => /^\s*[#＃]/.test(commandText(cfg, x)))
+    .filter((x) => isHashLine(commandText(cfg, x)))
     .filter((x) => session.kind === 'private' || calledByName(cfg, x))
     .map((x) => commandText(cfg, x))[0];
   // 2026-10-26 用户要求「其实只要叫你唱就行，不用指令」：

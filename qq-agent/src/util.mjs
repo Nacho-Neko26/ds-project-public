@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs';
+import fs from 'node:fs';
 import path from 'node:path';
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
@@ -74,6 +74,11 @@ export function nameHit(names, text) {
  * 一般指令和 # 指令都要先叫她：真 @ 她，或者正文里出现「溧月」。
  * 只看单条——批次里别人 @ 过她，不代表这条也算。
  */
+/** 桥自己的开关（#关机 #接管 #回来 #群聊）不过门禁：主人拿它按电源，卡在「先叫名字」上头会连叫醒的路都堵死 */
+export function isBridgeSwitch(m) {
+ return /^\s*[#＃]\s*(关机|接管|回来|群聊)/.test(String(m?.text || ''));
+}
+
 export function calledByUser(names, m) {
   if (!m) return false;
   if (m.atMe || m.mentioned) return true;
@@ -82,7 +87,24 @@ export function calledByUser(names, m) {
 
 /** 这条消息是不是 # 指令 */
 export function isHashLine(m) {
-  return /^\s*[#＃]/.test(String(m?.text || ''));
+ return /^\s*[#＃]/.test(stripHashCall(String(m?.text || '')));
+}
+
+// 「冥月 #好感度」这种称呼在前的也算 # 指令（不依赖配置里的名字）
+function stripHashCall(text) {
+ const t = String(text || '');
+ const at = t.indexOf('@');
+ if (at !== -1) {
+ // @那一串到空白为止；后面紧跟 #才算「@你 #指令」
+ const rest = t.slice(at +1).replace(/^\S{0,20}?\s+/, '');
+ return /^[#＃]/.test(rest) ? rest : t;
+ }
+ // 不带 @ 的：只剥「短短一个称呼 + #」，不认多字的句子
+ // 只剥「一个称呼 + 紧跟 #」：称呼必须是纯汉字（含·）且不超过四个字，句子中间的 # 不算指令
+ const m = t.match(/^\s*([^\s#＃]{1,4})\s*[,，:：、]?\s*(?=[#＃])/);
+ if (!m) return t;
+ if (!/^[\u4e00-\u9fa5·ぁ-\u30ff]{1,4}$/.test(m[1])) return t;
+ return t.slice(m[0].length);
 }
 
 /**
@@ -92,7 +114,7 @@ export function isHashLine(m) {
 export function gateHashLines(batch, { kind, isCalled } = {}) {
   const list = Array.isArray(batch) ? batch : [];
   if (kind !== 'group') return list;
-  return list.filter((m) => !isHashLine(m) || isCalled(m));
+  return list.filter((m) => !isHashLine(m) || isCalled(m) || isBridgeSwitch(m));
 }
 
 /**

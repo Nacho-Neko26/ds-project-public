@@ -1,6 +1,8 @@
 // 群聊「# 指令和一般指令都要先叫她」的门禁单测：node scripts/test-call-gate.mjs
 // 2026-10-28 用户定（m00122）：群里没叫到她的 # 指令一律当没看见。
-import { calledByUser, isHashLine, gateHashLines, nameHit } from '../src/util.mjs';
+import { calledByUser, isHashLine, gateHashLines, nameHit, stripCallBeforeHash, isBridgeSwitch } from '../src/util.mjs';
+import { isFavorCommand } from '../src/render.mjs';
+import { parseMoodCommand } from '../src/emotion.mjs';
 import { detectSingRequest, detectSingAsk } from '../src/sing-intent.mjs';
 
 let pass = 0, fail = 0;
@@ -14,7 +16,7 @@ const eq = (a, b, msg = '') => {
   }
 };
 
-const NAMES = ['溟月'];
+const NAMES = ['溧月'];
 const msg = (text, extra = {}) => ({ uid: 1, name: '某人', text, ...extra });
 const called = (m) => calledByUser(NAMES, m);
 
@@ -28,8 +30,8 @@ t('mentioned 字段也算叫她', () => {
   eq(called(msg('#好感度', { mentioned: true })), true);
 });
 
-t('正文出现「溟月」不算没叫', () => {
-  eq(called(msg('溟月 #好感度')), true);
+t('正文出现「溧月」不算没叫', () => {
+  eq(called(msg('溧月 #好感度')), true);
 });
 
 t('@ 了但正文没名字，也算（真 @ 优先）', () => {
@@ -47,8 +49,8 @@ t('通用外号不算叫她（群里有别的鲸鱼娘）', () => {
 });
 
 t('名字只是长得像也不认（不含子串）', () => {
-  eq(called(msg('溟月月你好')), true); // nameHit 是子串，含「溟月」就算
-  eq(called(msg('溟 月 #好感度')), false); // 中间有空格就不算
+  eq(called(msg('溧月月你好')), true); // nameHit 是子串，含「溧月」就算
+  eq(called(msg('溧 月 #好感度')), false); // 中间有空格就不算
 });
 
 t('空消息不炸', () => {
@@ -59,8 +61,8 @@ t('空消息不炸', () => {
 });
 
 t('名字表为空就不认外号', () => {
-  eq(calledByUser([], msg('溟月 #好感度')), false);
-  eq(nameHit([], '溟月'), false);
+  eq(calledByUser([], msg('溧月 #好感度')), false);
+  eq(nameHit([], '溧月'), false);
 });
 
 console.log('isHashLine');
@@ -75,12 +77,12 @@ t('前面有空格也认', () => {
 });
 
 t('# 不在开头就不算', () => {
-  eq(isHashLine(msg('溟月 #好感度')), false);
+  eq(isHashLine(msg('溧月 #好感度')), true);
   eq(isHashLine(msg('什么#东西')), false);
 });
 
 t('普通聊天不算 # 指令', () => {
-  eq(isHashLine(msg('溟月你好')), false);
+  eq(isHashLine(msg('溧月你好')), false);
   eq(isHashLine(msg('')), false);
   eq(isHashLine(null), false);
 });
@@ -88,7 +90,7 @@ t('普通聊天不算 # 指令', () => {
 console.log('gateHashLines');
 
 t('私聊一条不少', () => {
-  const batch = [msg('#好感度'), msg('溟月 #心情'), msg('随便聊聊')];
+  const batch = [msg('#好感度'), msg('溧月 #心情'), msg('随便聊聊')];
   eq(gateHashLines(batch, { kind: 'private', isCalled: called }).length, 3);
 });
 
@@ -98,9 +100,9 @@ t('kind 没传当私聊处理（不拦）', () => {
 });
 
 t('群里：没叫她的 # 剔掉，普通聊天留下', () => {
-  const batch = [msg('#好感度'), msg('溟月 #心情'), msg('刚才那个梗好好笑')];
+  const batch = [msg('#好感度'), msg('溧月 #心情'), msg('刚才那个梗好好笑')];
   const kept = gateHashLines(batch, { kind: 'group', isCalled: called });
-  eq(kept.map((m) => m.text), ['溟月 #心情', '刚才那个梗好好笑']);
+  eq(kept.map((m) => m.text), ['溧月 #心情', '刚才那个梗好好笑']);
 });
 
 t('群里：一条都没叫到 → 空的（这一批整个不办）', () => {
@@ -119,15 +121,15 @@ t('群里：非 # 的指令不受这道门约束（交给后面的批次判定�
 });
 
 t('群里：# 夹在中间也算，只看单条', () => {
-  const batch = [msg('溟月在吗'), msg('#好感度'), msg('溟月 #心情')];
+  const batch = [msg('溧月在吗'), msg('#好感度'), msg('溧月 #心情')];
   const kept = gateHashLines(batch, { kind: 'group', isCalled: called });
-  eq(kept.map((m) => m.text), ['溟月在吗', '溟月 #心情']);
+  eq(kept.map((m) => m.text), ['溧月在吗', '溧月 #心情']);
 });
 
 t('批次里别人叫了她，不能替另一条 # 开绿灯', () => {
-  const batch = [msg('溟月你看'), msg('#好感度')];
+  const batch = [msg('溧月你看'), msg('#好感度')];
   const kept = gateHashLines(batch, { kind: 'group', isCalled: called });
-  eq(kept.map((m) => m.text), ['溟月你看']);
+  eq(kept.map((m) => m.text), ['溧月你看']);
 });
 
 t('非数组/空批次不炸', () => {
@@ -135,12 +137,10 @@ t('非数组/空批次不炸', () => {
   eq(gateHashLines([], { kind: 'group', isCalled: called }), []);
 });
 
-t('桥自己的开关交给调用方放行（这里只看 isCalled）', () => {
-  const bridgeSwitch = /^\s*[#＃]\s*(关机|接管|回来|群聊)/;
-  const isCalled = (m) => bridgeSwitch.test(String(m.text || '')) || called(m);
-  const batch = [msg('#关机'), msg('#好感度')];
-  const kept = gateHashLines(batch, { kind: 'group', isCalled });
-  eq(kept.map((m) => m.text), ['#关机']);
+t('桥自己的开关直接过门禁（不用调用方再判一次）', () => {
+ const batch = [msg('#关机'), msg('#好感度')];
+ const kept = gateHashLines(batch, { kind: 'group', isCalled: () => false });
+ eq(kept.map((m) => m.text), ['#关机']);
 });
 
 console.log('点唱识别也要认同一套「叫她」口径');
@@ -149,8 +149,8 @@ t('群里没叫她 → 不认点唱', () => {
   eq(detectSingRequest('翻唱起风了', { isGroup: true }), null);
 });
 
-t('群里叫「溟月」→ 认', () => {
-  eq(detectSingRequest('溟月 翻唱起风了', { isGroup: true })?.body, '起风了');
+t('群里叫「溧月」→ 认', () => {
+  eq(detectSingRequest('溧月 翻唱起风了', { isGroup: true })?.body, '起风了');
 });
 
 t('群里真 @ 她 → 认', () => {
@@ -169,9 +169,46 @@ t('私聊不用叫她', () => {
 
 t('征求许可（能不能点一首）同一套口径', () => {
   eq(detectSingAsk('可以点一首吗', { isGroup: true }), null);
-  eq(detectSingAsk('溟月 可以点一首吗', { isGroup: true })?.word, '翻唱');
+  eq(detectSingAsk('溧月 可以点一首吗', { isGroup: true })?.word, '翻唱');
   eq(detectSingAsk('可以点一首吗', { isGroup: true, atMe: true })?.word, '翻唱');
   eq(detectSingAsk('可以点一首吗')?.word, '翻唱');
+});
+
+t('剥掉 # 前那声称', () => {
+ eq(stripCallBeforeHash('溧月 #好感度', NAMES), '#好感度');
+ eq(stripCallBeforeHash('溧月#好感度', NAMES), '#好感度');
+ eq(stripCallBeforeHash('溧月：#心情', NAMES), '#心情');
+ eq(stripCallBeforeHash('溧月今天好热', NAMES), '溧月今天好热');
+ eq(stripCallBeforeHash('溧月 #好感度', []), '溧月 #好感度');
+});
+
+t('称呼在前的指令能被认出来', () => {
+ eq(isFavorCommand('溧月 #好感度'), true);
+ eq(isFavorCommand('溧月#好感度'), true);
+ eq(isFavorCommand('#好感度'), true);
+ eq(isFavorCommand('溧月说个好感度'), false);
+ eq(parseMoodCommand('溧月 #心情'), true);
+ eq(parseMoodCommand('溧月 #心情今天'), false);
+});
+
+t('剥完称呼也算叫她', () => {
+ eq(calledByUser(NAMES, msg('溧月 #好感度')), true);
+});
+
+
+
+t('不依赖配置也能认出称呼在前的 #', () => {
+ eq(isHashLine({ text: '溧月 #好感度' }), true);
+ eq(isHashLine({ text: '溧月#好感度' }), true);
+ eq(isHashLine({ text: '@你 #好感度' }), true);
+ eq(isHashLine({ text: '什么#东西' }), false);
+});
+
+t('桥开关判定', () => {
+ eq(isBridgeSwitch({ text: '#关机' }), true);
+ eq(isBridgeSwitch({ text: '#回来' }), true);
+ eq(isBridgeSwitch({ text: '#群聊 静音' }), true);
+ eq(isBridgeSwitch({ text: '#好感度' }), false);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
