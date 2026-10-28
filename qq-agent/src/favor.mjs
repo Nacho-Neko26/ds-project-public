@@ -272,7 +272,7 @@ export function renderFavorCard(favorOrPerson, qualifiedArg, trustArg, opts = {}
     ? null
     : Math.max(0, Math.min(100, Number(trustNow)));
   const lines = [];
-  lines.push(`我在你这里的身份：${st.name}${isOwner ? '（你是主人，这条路永远给你开着）' : ''}`);
+  lines.push(`你在我心里：${st.name}`);
   lines.push(`现在做得到的：${(st.perms || []).join('、')}`);
   const next = STAGES.find((s) => s.min > eff);
   if (next) {
@@ -288,8 +288,8 @@ export function renderFavorCard(favorOrPerson, qualifiedArg, trustArg, opts = {}
       : '我不太信你';
     lines.push(next ? `${mood}；想再往上，得先让我更信你` : mood);
   }
-  // 用户 m01126：查好感只说关系和权限，不说分数。这行是给模型的硬约束。
-  lines.push('（对外只讲关系和能做什么，不许报分数、门槛、距离）');
+  // 用户 2026-10-28：卡片结尾那行括号（「对外只讲关系和能做什么…」）不要了。
+  // 硬约束改为只写在代码注释里：查好感只说关系和能做什么，不许报分数、门槛、距离（m01126）。
   return lines.join('\n');
 }
 
