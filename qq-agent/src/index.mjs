@@ -1,4 +1,4 @@
-﻿import fs from 'node:fs';
+import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { loadConfig } from './config.mjs';
@@ -2818,9 +2818,10 @@ async function handleBatch(session, batch) {
   if (session.kind === 'group') {
     const bridgeSwitch = (m) => isBridgeSwitch(m);
     const kept = gateHashLines(batch, {
-      kind: 'group',
-      isCalled: (m) => bridgeSwitch(m) || calledByName(cfg, m),
-    });
+ kind: 'group',
+ names: callNames(cfg),
+ isCalled: (m) => bridgeSwitch(m) || calledByName(cfg, m),
+ });
     if (!kept.length) {
       // 一条都没叫她的 # 指令：整批当没看见，连模型都不叫——不烧 token、不吭声、不留痕。
       state.stats.skipped++;
@@ -2953,7 +2954,7 @@ async function handleBatch(session, batch) {
   // 2026-10-28 用户定（m00122）：群里打 # 指令也得先叫她。
   // 逐条挑「带 # 且这条自己叫了她」的那种；私聊不设这道门。
   const hashLine = batch
-    .filter((x) => isHashLine(commandText(cfg, x)))
+    .filter((x) => isHashLine(commandText(cfg, x), callNames(cfg)))
     .filter((x) => session.kind === 'private' || calledByName(cfg, x))
     .map((x) => commandText(cfg, x))[0];
   // 2026-10-26 用户要求「其实只要叫你唱就行，不用指令」：
@@ -4494,22 +4495,19 @@ function personaAliasHit(cfg, text) {
 }
 
 /**
- * 群聊里「这条指令到没到叫她」（2026-10-28 用户定，m00122）。
- * 一般指令和 # 指令都必须先叫她：真 @ 她，或者正文里出现「溧月」。
- * 只看单条消息——批次里别人 @ 过她，不代表这条也能算。
- * 私聊永远算叫到了。
+ *群聊里「这条指令到没到叫她」（2026-10-28用户定，m00122）：真 @她，或者正文里出现「溧月」。
+ *只看单条——批次里别人 @过她，不代表这条也算；私聊永远算叫到了。
  */
+/** 群里叫她的那几个名字（没配置就是本名） */
+function callNames(cfg) {
+ const c = char();
+ return Array.isArray(c.groupCallNames) && c.groupCallNames.length
+ ? c.groupCallNames
+ : [c.name];
+}
+
 function calledByName(cfg, m) {
-  const c = char();
-  const names = Array.isArray(c.groupCallNames) && c.groupCallNames.length
-    ? c.groupCallNames
-    : [c.name];
-  if (calledByUser(names, m)) return true;
-  // 剥掉行首那声称呼之后才露出的 # 指令，也算她听见了（2026-10-28）。
-  // 否则「溧月 #好感度」会被门禁当闲聊放过去、又不被指令层认出来，两头落空。
-  const text = String((m && m.text) || '');
-  if (!/[#＃]/.test(text)) return false;
-  return stripCallBeforeHash(text, names) !== text;
+ return calledByUser(callNames(cfg), m);
 }
 
 /**
@@ -4519,11 +4517,7 @@ function calledByName(cfg, m) {
 function commandText(cfg, m) {
  const text = String((m && m.text) || '');
  if (!/[#＃]/.test(text)) return text;
- const c = char();
- const names = Array.isArray(c.groupCallNames) && c.groupCallNames.length
- ? c.groupCallNames
- : [c.name];
- return stripCallBeforeHash(text, names);
+ return stripCallBeforeHash(text, callNames(cfg));
 }
 
 ob.on('event', (ev) => {

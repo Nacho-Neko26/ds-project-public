@@ -85,36 +85,42 @@ export function calledByUser(names, m) {
   return nameHit(names, String(m.text || ''));
 }
 
-/** 这条消息是不是 # 指令 */
-export function isHashLine(m) {
- return /^\s*[#＃]/.test(stripHashCall(String(m?.text || '')));
+/**
+ * 这条消息是不是 # 指令。
+ * 「冥月 #好感度」、「@你 #好感度」跟「#好感度」一样算；句子中间的 # 不算。
+ *2026-10-28：称呼那一截只认已知名字（传入 names），不传就只认 @。
+ */
+export function isHashLine(m, names) {
+ const text = String((m && m.text) || '');
+ if (/^\s*[#＃]/.test(text)) return true;
+ const rest = restAfterCall(text, names);
+ return rest !== text && /^\s*[#＃]/.test(rest);
 }
 
-// 「冥月 #好感度」这种称呼在前的也算 # 指令（不依赖配置里的名字）
-function stripHashCall(text) {
+/** 剥完这声称之后的剩下部分；没剥就原样返回 */
+export function restAfterCall(text, names) {
  const t = String(text || '');
+ const list = (names || []).map((x) => String(x || '').trim()).filter(Boolean);
  const at = t.indexOf('@');
  if (at !== -1) {
- // @那一串到空白为止；后面紧跟 #才算「@你 #指令」
- const rest = t.slice(at +1).replace(/^\S{0,20}?\s+/, '');
- return /^[#＃]/.test(rest) ? rest : t;
+ // @那串到空白为止；后面紧跟 # 才算「@你 #指令」
+ const after = t.slice(at +1).replace(/^\S{0,20}?\s+/, '');
+ if (/^[#＃]/.test(after)) return after;
  }
- // 不带 @ 的：只剥「短短一个称呼 + #」，不认多字的句子
- // 只剥「一个称呼 + 紧跟 #」：称呼必须是纯汉字（含·）且不超过四个字，句子中间的 # 不算指令
- const m = t.match(/^\s*([^\s#＃]{1,4})\s*[,，:：、]?\s*(?=[#＃])/);
- if (!m) return t;
- if (!/^[\u4e00-\u9fa5·ぁ-\u30ff]{1,4}$/.test(m[1])) return t;
- return t.slice(m[0].length);
+ if (!list.length) return t;
+ const esc = list.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+ const re = new RegExp(`^\\s*(?:${esc})\\s*[,，:：、]?\\s*(?=[#＃])`);
+ return t.replace(re, '');
 }
 
 /**
  * 群里没叫她就发的 # 指令一律剔除（2026-10-28 用户定，m00122）。
  * 私聊原样返回；群里只留「没带 # 」的和「带了 # 且这条自己叫了她」的。
  */
-export function gateHashLines(batch, { kind, isCalled } = {}) {
+export function gateHashLines(batch, { kind, isCalled, names } = {}) {
   const list = Array.isArray(batch) ? batch : [];
   if (kind !== 'group') return list;
-  return list.filter((m) => !isHashLine(m) || isCalled(m) || isBridgeSwitch(m));
+  return list.filter((m) => !isHashLine(m, names) || isCalled(m) || isBridgeSwitch(m));
 }
 
 /**
@@ -124,11 +130,9 @@ export function gateHashLines(batch, { kind, isCalled } = {}) {
  * 只剥「称呼 + 可选标点 + 紧跟着 #」这一种，普通闲聊一个字都不动。
  */
 export function stripCallBeforeHash(text, names) {
-  const list = (names || []).map((x) => String(x || '').trim()).filter(Boolean);
-  if (!list.length) return String(text ?? '');
-  const esc = list.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  const re = new RegExp(`^\\s*(?:${esc})\\s*[，,：:、]?\\s*(?=[#＃])`);
-  return String(text ?? '').replace(re, '');
+ const t = String(text ?? '');
+ const rest = restAfterCall(t, names);
+ return rest;
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

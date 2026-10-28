@@ -596,7 +596,7 @@ export function rollGroupChance(cfg, chatKey, boost = false, rnd = Math.random) 
  * 并指出「根本没有概率回话这回事，就是不 @ 就不会回复」——原来桥侧在这之前就 return 了。
  *
  * 规则：
- *   ① 被 @ / 叫了「溟月」→ 进，且刷新 wakeUntil，这一轮必须回；
+ *   ① 被 @ / 叫了「溧月」→ 进，且刷新 wakeUntil，这一轮必须回；
  *   ② 刷新过之后 wakeWindowMinutes 分钟内 → 进，但不强制回（让她接着聊）；
  *   ③ 其余 → 按 reply.groupChance 真掷骰，命中才进；
  *   ④ mention 模式的群不掷骰、不开窗口，只认被叫。

@@ -26,7 +26,7 @@ function eq(name, actual, expected) {
 
 /* ---------- countHumanSpeech：谁算「真人说话」 ---------- */
 const row = (text, extra = {}) => ({ t: Date.now(), role: 'user', uid: '10086', name: '群友', text, ...extra });
-const me = (text) => ({ t: Date.now(), role: 'bot', name: '溟月', text });
+const me = (text) => ({ t: Date.now(), role: 'bot', name: '溧月', text });
 const pic = (text) => row(text, { text });
 
 eq('空记录 → 0', countHumanSpeech([]), 0);

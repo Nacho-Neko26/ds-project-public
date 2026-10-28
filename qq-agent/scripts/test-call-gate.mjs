@@ -77,8 +77,8 @@ t('前面有空格也认', () => {
 });
 
 t('# 不在开头就不算', () => {
-  eq(isHashLine(msg('溧月 #好感度')), true);
-  eq(isHashLine(msg('什么#东西')), false);
+ eq(isHashLine(msg('溧月 #好感度'), NAMES), true);
+ eq(isHashLine(msg('什么#东西'), NAMES), false);
 });
 
 t('普通聊天不算 # 指令', () => {
@@ -105,8 +105,8 @@ t('群里：没叫她的 # 剔掉，普通聊天留下', () => {
   eq(kept.map((m) => m.text), ['溧月 #心情', '刚才那个梗好好笑']);
 });
 
-t('群里：一条都没叫到 → 空的（这一批整个不办）', () => {
-  const batch = [msg('#好感度'), msg('#关机')];
+t('群里：一条都没叫到 →空的（这一批整个不办）', () => {
+ const batch = [msg('#好感度'), msg('#心情')];
   eq(gateHashLines(batch, { kind: 'group', isCalled: called }).length, 0);
 });
 
@@ -198,10 +198,10 @@ t('剥完称呼也算叫她', () => {
 
 
 t('不依赖配置也能认出称呼在前的 #', () => {
- eq(isHashLine({ text: '溧月 #好感度' }), true);
- eq(isHashLine({ text: '溧月#好感度' }), true);
+ eq(isHashLine({ text: '溧月 #好感度' }, ['溧月']), true);
+ eq(isHashLine({ text: '溧月#好感度' }, ['溧月']), true);
  eq(isHashLine({ text: '@你 #好感度' }), true);
- eq(isHashLine({ text: '什么#东西' }), false);
+ eq(isHashLine({ text: '什么#东西' }, ['溧月']), false);
 });
 
 t('桥开关判定', () => {
