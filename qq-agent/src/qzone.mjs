@@ -236,6 +236,16 @@ export async function maybePostDaily({
   const conf = qzoneConfig(cfg);
   if (!conf.enabled) return { posted: false, reason: 'disabled' };
 
+  // 服务器紧张时后台整理先让路（2026-10-28 用户要求：先保文本回复）。
+  // force=true 是号主手动发的，不走这层。
+  if (!force) {
+    const gate = guardFor(cfg).allow('bg');
+    if (!gate.ok) {
+      if (typeof note === 'function') note('info', `[说说] ${gate.reason}`);
+      return { posted: false, reason: 'busy', detail: gate.reason };
+    }
+  }
+
   const day = dayKeyLocal(now);
   const st = loadState(cfg);
   const mins = now.getHours() * 60 + now.getMinutes();

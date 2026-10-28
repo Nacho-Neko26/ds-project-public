@@ -32,6 +32,7 @@ import { readHabits, updateHabits, habitsConfig } from './habits.mjs';
 import { learnMemories, renderMemory, memoryConfig } from './memory.mjs';
 import { appendMemory, queryMemory, removeMemory, clearMemory } from './memory.mjs';
 import { querySlang, submitSlang, renderSlang } from './slang.mjs';
+import { guardFor, busyLine } from './resource-guard.mjs';
 import { getBalance, maybeNotifyHungry, balanceConfig, recordBalancePoint, computeSpend, balanceLineFor } from './balance.mjs';
 import { getAmbient, renderAmbient } from './ambient.mjs';
 import { createSelfwake, selfwakeConfig } from './selfwake.mjs';
@@ -100,6 +101,8 @@ import { listVoices, voicesError, pickVoice, ensureRemote } from './voicelib.mjs
 import { auditOutbound, escapeCq } from './outbound.mjs';
 
 let cfg = loadConfig();
+// 资源守卫：优先保文本回复不掉线（2026-10-28 用户要求）
+let guard = guardFor(cfg);
 initCharacter(cfg);
 ensureDir(cfg.dataDir);
 ensureDir(cfg.logDir);
@@ -151,7 +154,11 @@ async function refreshDiaryIfNeeded() {
     // 落盘标记是为了重启后不重复清空（踩过：重启一次把当天记录全归档走了）。
     if (lastClearDay(cfg.agentCwd) !== today) {
       try {
-        const made = await ensureYesterdayDiary({ runner, cfg });
+        // 「补昨天的日记」要起一轮 dsh，服务器紧张时先不补（归档照做）
+        if (!guard.allow('bg').ok) note('info', '[日记] 服务器紧张，昨天的日记今天不补了');
+        const made = guard.allow('bg').ok
+          ? await ensureYesterdayDiary({ runner, cfg })
+          : null;
         if (made) note('info', `昨天的日记已就绪（${made.key}）`);
       } catch (e) {
         note('warn', `日记生成失败: ${e.message}`);
@@ -188,13 +195,18 @@ function note(level, msg, extra) {
 class Semaphore {
   constructor(n) { this.n = Math.max(1, n); this.queue = []; }
   get used() { return this.n - this.queue.length - (this.active ?? 0); }
-  async acquire() {
+  async acquire(opts = {}) {
+    // critical = 文本回复：不排队，直接占一个超额槽（2026-10-28 用户要求「先保文本回复」）。
+    // 后台任务可能把 2 个槽都占着，主回复再排到队伍后面就是「人说话没人应」。
+    if (opts.critical) { this.active = (this.active ?? 0) + 1; return; }
     if ((this.active ?? 0) < this.n) { this.active = (this.active ?? 0) + 1; return; }
     await new Promise((r) => this.queue.push(r));
     this.active = (this.active ?? 0) + 1;
   }
   release() {
     this.active = Math.max(0, (this.active ?? 0) - 1);
+    // 还有超额（critical）在跑就别再放队列里的，等降回上限再说
+    if ((this.active ?? 0) >= this.n) return;
     const next = this.queue.shift();
     if (next) next();
   }
@@ -614,6 +626,12 @@ function flushDescCache() {
  *  opts.filmstrip = { frames } 时是动图拼图：缓存键加后缀，避免复用「十六张小图」那种旧描述。
  */
 async function describeCached(file, hint, opts = {}) {
+  // 快满时不调看图模型（一次上万 token，还要解码图片），给个占位别让上游拼出 undefined
+  const imgGate = guard.allow('media');
+  if (!imgGate.ok) {
+    note('warn', `[看图] 跳过：${imgGate.reason}`);
+    return { text: '（这会儿没细看）', tags: [], moodHints: [], cached: false, legacy: false, skipped: true };
+  }
   const h = hashFile(file);
   const key = h ? h + (opts.filmstrip ? ':filmstrip' : '') : null;
   const hit = key ? descCache[key] : null;
@@ -1793,6 +1811,13 @@ function splitVoiceText(text, maxChars) {
 }
 
 async function sendVoiceToCurrent(session, text, opts = {}) {
+  // 快满时不合语音（ffmpeg + TTS 那一步最吃内存），用一句话顶回去，人还接得上话
+  const voiceGate = guard.allow('media');
+  if (!voiceGate.ok) {
+    note('warn', `[${session.key}] 语音跳过：${voiceGate.reason}`);
+    try { await sendText(session, busyLine('media'), null); } catch { /* 这都不行就当没这条 */ }
+    return null;
+  }
   const v = voiceCfg();
   const maxChars = Math.floor(Number(v.maxSeconds ?? 10) * 4.2);
   const pieces = splitVoiceText(text, maxChars);
@@ -2350,17 +2375,45 @@ async function runDirectives(session, dir, { last, profiles, batchText = '', rec
     else problems.push(r.message);
   }
 
+  // 2026-10-28 用户要求：「把点歌推送歌曲卡片功能关了，所有点歌类消息都算翻唱或者清唱」。
+  // 所以 __MUSIC__ 不再去网易云搜歌、不再发语音片段或卡片，一律转成翻唱任务：
+  // payload 里带「清唱」就出清唱，其余按普通翻唱（默认副歌 40~60 秒 + #音色 的默认音色）。
   for (const q of dir.music) {
-    if (!musicConfig(cfg).enabled) continue;
-    const needSong = MUSIC_FAVOR();
-    if (!isOwner && !trusted && actionFavor.favor < needSong) {
-      note('info', `[${session.key}] 好感不足点歌（${actionFavor.favor} < ${needSong}），忽略`);
-      problems.push(`点歌得等好感 ${needSong} 以上，你还差 ${needSong - actionFavor.favor} 分`);
+    const raw = String(q || '').trim();
+    if (!raw) continue;
+    const isAcc = /清唱/.test(raw);
+    const song = raw
+      .replace(/^(点歌|点播|唱一首|唱首|唱|来一首|来一段|放一首|放首)\s*/u, '')
+      .replace(/清唱|翻唱/g, '')
+      .trim() || raw;
+    const needSing = SING_FAVOR();
+    if (!isOwner && !trusted && actionFavor.favor < needSing) {
+      note('info', `[${session.key}] 好感不足，点歌转翻唱被拦（${actionFavor.favor} < ${needSing}）`);
+      problems.push(`唱歌得等好感 ${needSing} 以上，你还差 ${needSing - actionFavor.favor} 分`);
       continue;
     }
-    const r = await sendSong({ ob, cfg, session, query: q, incomingDir, note });
-    if (r.ok) did = true;
-    else problems.push(r.message);
+    const alive = executorOnline(cfg);
+    if (!alive.online) {
+      note('info', `[${session.key}] 点歌转翻唱被拦下：执行器不在线（心跳 ${alive.ts || '没有'}）`);
+      problems.push(pickOfflineReply(isAcc ? '清唱' : '翻唱'));
+      continue;
+    }
+    const defVoice = readDefaultVoice(cfg);
+    const useVoice = (defVoice && defVoice.voice) || '';
+    const job = enqueueCover(cfg, {
+      song,
+      chat: session.key,
+      by: Number(senderUid),
+      mode: isAcc ? 'acappella' : 'vocal',
+      voice: useVoice || undefined,
+      engine: engineForVoice(useVoice),
+      segment: { chorus: true },
+    });
+    rememberCoverJob(cfg, job);
+    did = true;
+    // 不再额外回一句：__MUSIC__ 是模型自己吐出来的，它那段正文已经会发到聊天里，
+    // 这里再补一句就成两条了。
+    note('info', `[${session.key}] 点歌转${isAcc ? '清唱' : '翻唱'}排队：《${song}》任务 ${job.id}`);
   }
 
   return { did, problems };
@@ -2878,7 +2931,9 @@ async function handleBatch(session, batch) {
   const cmdLine = hashLine || singCmd;
   const actor = singFrom || last;
   if (cmdLine) {
-    const FIXED_COMMANDS = ['好感度', '心情', '同步', '翻唱', '清唱', '音色', '本机', '语音库', '点播'];
+    // 「模型」列在这里只是为了让它能吃不打空格的写法（#模型go / #模型中转）；
+    // 它本身是主人专属命令，非主人会在下面的 isOwnerCommandName 那道门被挡掉。
+    const FIXED_COMMANDS = ['好感度', '心情', '同步', '翻唱', '清唱', '音色', '本机', '语音库', '点播', '模型', '资源'];
     const hashParsed = matchCommandLine(cmdLine) || {};
     let hashName = hashParsed.name || '';
     let hashExtra = String(hashParsed.extra || '');
@@ -2917,6 +2972,13 @@ async function handleBatch(session, batch) {
       // 固定命令：任何人都能查；#同步 只给号主
       if (hashName === '同步' && !canActOnMe) {
         await sendText(session, '这个只有主人能让我做', null);
+        return;
+      }
+      // #资源：看一眼现在服务器什么档位、为什么在让路（只有号主能看）
+      if (hashName === '资源') {
+        if (!canActOnMe) { await sendText(session, '这个只有主人能让我做', null); return; }
+        await sendText(session, guard.line(), null);
+        note('info', `[${session.key}] #资源 → ${guard.line()}`);
         return;
       }
       if (hashName === '好感度') {
@@ -3130,7 +3192,7 @@ async function handleBatch(session, batch) {
           parsed.backingGain != null ? `和声${parsed.backingGain}%` : '',
           parsed.transpose != null ? `变调${parsed.transpose > 0 ? '+' : ''}${parsed.transpose}` : '',
           parsed.indexRate != null ? `贴合${parsed.indexRate}%` : '',
-          useVoice ? `音色${useVoice}` : '',
+          // 2026-10-28 用户要求：回话里别提用的是哪个音色，音色只在 #音色 指令里说
         ].filter(Boolean).join(' ');
         // 在线回话：随机拼一句「马上要唱」的话（不写死整句），也不提排队、不提要跑多久
         await sendText(session, `${pickOnlineReply(word, { full: segment === null })}${tuned ? `（${tuned}）` : ''}`, null);
@@ -3703,7 +3765,7 @@ async function handleBatch(session, batch) {
     if (!typingTarget?.userId) return;
     void ob.setInputStatus({ ...typingTarget, eventType }).catch(() => {});
   };
-  await sem.acquire();
+  await sem.acquire({ critical: true });
   let result;
   try {
     typing(1);
@@ -4737,6 +4799,7 @@ const control = startControl(cfg, {
     history = new HistoryStore(cfg.dataDir, cfg.raw.context);
     runner = new AgentRunner(cfg);
     sem = new Semaphore(cfg.raw.agent.maxConcurrent);
+    guard = guardFor(cfg);
     note('info', `配置已重载：私聊白名单 ${cfg.privateAllow.size} 人，群 ${cfg.groupAllow.size} 个，可信 ${cfg.trusted.size} 人`);
     if (JSON.stringify(old.raw.napcat) !== JSON.stringify(cfg.raw.napcat)) {
       note('warn', 'napcat 连接参数变了，需要重启进程才生效');

@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir, readJsonl, safeFileName, hhmm, log } from './util.mjs';
+import { guardFor } from './resource-guard.mjs';
 
 export const DEFAULT_SUMMARY = {
   enabled: true,
@@ -80,6 +81,10 @@ function renderFor(model, rows, chatKey) {
 export async function maybeSummarize({ cfg, runner, history, chatKey, note = log }) {
   const c = summaryConfig(cfg);
   if (!c.enabled) return null;
+
+  // 服务器紧张时后台整理先让路（2026-10-28 用户要求：先保文本回复）。
+  const gate = guardFor(cfg).allow('bg');
+  if (!gate.ok) { note('info', `[摘要] ${gate.reason}`); return null; }
 
   const file = history.file(chatKey);
   if (!fs.existsSync(file)) return null;

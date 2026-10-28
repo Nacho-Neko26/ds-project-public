@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { appendJsonl, readJsonl, ensureDir, safeFileName, hhmm, log } from './util.mjs';
+import { guardFor } from './resource-guard.mjs';
 
 export const DEFAULT_MEMORY_CONFIG = {
   enabled: true,
@@ -128,6 +129,10 @@ export async function learnMemories({ runner, cfg, chatKey, chatTitle }) {
   const conf = memoryConfig(cfg);
   if (!conf.enabled) return [];
   if (!chatKey.startsWith('group:')) return []; // 先只从群聊学
+
+  // 服务器紧张时后台整理先让路（2026-10-28 用户要求：先保文本回复）。
+  const gate = guardFor(cfg).allow('bg');
+  if (!gate.ok) { log('info', `[记忆学习] ${gate.reason}`); return []; }
 
   const { text, count } = recentMaterial(cfg.dataDir, chatKey, 100);
   if (count < conf.minMessages) return [];

@@ -107,14 +107,17 @@ export class AgentRunner {
     this.chatPatch = path.join(this.patchesDir, 'generated-chat.yml');
     this.describePatch = path.join(this.patchesDir, 'generated-describe.yml');
     this.personaMtime = 0;
-    // 2026-10-27：服务器日常走中转站（provider relay21r），官方留作备用。
+    // 2026-10-28 用户要求：云端默认 go（provider opencode-go），go 坏了切官方，
+    // 21R 中转只在下了 #模型 中转 指令时才用，而且不再自动切回来。
     // headless profile 没挂 credentials 插件，apiKeyEnv 只能从子进程环境变量解析，
-    // 所以两个 key 都得带进去：中转 key → RELAY_API_KEY，官方 key → DEEPSEEK_API_KEY。
+    // 所以几个 key 都得带进去：go → OPENCODE_GO_API_KEY，中转 → RELAY_API_KEY，
+    // 官方 → DEEPSEEK_API_KEY。
     this.apiKey = readCredential('DEEPSEEK_API_KEY');
     this.relayKey = readCredential('RELAY_API_KEY') || this.apiKey;
     this.goKey = readCredential('OPENCODE_GO_API_KEY');
-    // 两条路的 overlay patch：谁 active 就挂谁，见 src/model-mode.mjs
+    // 三条路各自的 overlay patch：谁 active 就挂谁，见 src/model-mode.mjs
     this.modelPatches = {
+      go: path.join(this.patchesDir, 'generated-model-go.yml'),
       relay: path.join(this.patchesDir, 'generated-model-relay.yml'),
       official: path.join(this.patchesDir, 'generated-model-official.yml'),
     };
@@ -123,8 +126,11 @@ export class AgentRunner {
     if (!this.apiKey) {
       log('warn', '没找到 DEEPSEEK_API_KEY（环境变量和 ~/.dsh/.credentials.yaml 里都没有）');
     }
+    if (!this.goKey) {
+      log('warn', '没找到 OPENCODE_GO_API_KEY，go 路线会以 MISSING_CREDENTIAL 失败');
+    }
     if (!this.relayKey) {
-      log('warn', '没找到 RELAY_API_KEY，中转站路由会以 MISSING_CREDENTIAL 失败');
+      log('warn', '没找到 RELAY_API_KEY，21R 中转路线会以 MISSING_CREDENTIAL 失败');
     }
     if (!this.dsh.script) {
       log('warn', `没找到 dsh 入口：${this.dsh.binDir}；可用 QB_DSH_BIN_DIR 指定`);
@@ -205,9 +211,9 @@ export class AgentRunner {
   }
 
   /**
-   * 写两条模型路线各自的 overlay patch。
-   * profile 里 agent-default-model 已经指向中转，所以「官方」这份是覆盖用的；
-   * 「中转」这份用于自己切回中转（或者 guard 切回来）后明确写死。
+   * 写三条模型路线各自的 overlay patch。
+   * profile 里 agent-default-model 先写了默认值，这里每份都显式写死 provider/model，
+   * 免得上游默认值一变就跟着漂。
    */
   #writeModelPatches() {
     const write = (file, provider, model, effort = 'high') => {
@@ -227,7 +233,12 @@ export class AgentRunner {
         log('warn', `写模型 patch 失败：${file}`, e.message);
       }
     };
-    write(this.modelPatches.relay, 'opencode-go', 'deepseek-v4.1-flash', null);
+    // go（日常默认）：opencode-go 那侧没声明 reasoningEfforts，别硬塞 high
+    write(this.modelPatches.go, 'opencode-go', 'deepseek-v4.1-flash', null);
+    // 21R 中转：只有 #模型 中转 才走。effort 传 null —— 这个 provider 一整行都不认
+    // reasoningEffort，传 high/medium/none 报的都是同一句 UNSUPPORTED_REASONING_EFFORT（10-28 前踩过）
+    write(this.modelPatches.relay, 'relay21r', 'deepseek-v4.1-flash', null);
+    // 官方：go 不通时顶着
     write(this.modelPatches.official, 'deepseek-official', 'deepseek-flash');
   }
 
@@ -274,12 +285,12 @@ export class AgentRunner {
     // --json 让 dsh 输出每步的 usage，桥就能记账；老版本 dsh 不认这个参数，失败会退回纯文本再跑一次
     const wantJson = this.cfg.raw.agent?.jsonEvents !== false;
 
-    // 当前该走哪条：relay（日常）还是 official（中转挂了时的兜底）
+    // 当前该走哪条：go（日常默认）/ relay（手动选的中转）/ official（兜底）
     const st = readModelMode(this.cfg);
-    const route = st.mode === 'official' ? 'official' : 'relay';
+    const route = st.mode === 'official' ? 'official' : (st.mode === 'relay' ? 'relay' : 'go');
     const runOnce = async (r) => {
       // modelPatch: false 时完全不挂路线 patch —— 图片描述要把模型钉在能吃图的官方模型上，
-      // 这里再追加一次 relay21r 会把它覆盖回去（2026-10-28 踩过：patch 写了官方，还是走中转）。
+      // 这里再追加一次路线 patch 会把它覆盖回去（2026-10-28 踩过：patch 写了官方，还是走中转）。
       const args = [...baseArgs(), ...(modelPatch ? ['--patch', this.modelPatches[r]] : [])];
       const out = await this.#spawn([...args, ...(wantJson ? ['--json'] : []), prompt], env, timeoutMs);
       return this.#finish(out, wantJson);
@@ -293,9 +304,12 @@ export class AgentRunner {
       return { ...plain, text: stripAnsi(plain.stdout).trim(), usage: null, route };
     }
 
-    // 中转这轮挂了 → 当场切官方重跑一次，别让用户这句话落空
-    if (!result.ok && route === 'relay' && looksLikeProviderFailure(result.stderr, result.timedOut)) {
-      log('warn', '中转这次没成，本次改走官方重试');
+    // 这条路这轮挂了 → 当场切官方重跑一次，别让用户这句话落空。
+    // 官方自己挂了就别再套娃（route === 'official' 时不动状态，留给人看日志）。
+    // modelPatch === false 的调用（读图描述）钉死官方、跟聊天路线无关，
+    // 它超时不能拿来判线路死活——2026-10-28 就这么被一张图的 20s 超时把整条聊天线切走了。
+    if (modelPatch && !result.ok && route !== 'official' && looksLikeProviderFailure(result.stderr, result.timedOut)) {
+      log('warn', `${route === 'relay' ? '中转' : 'go'} 这次没成，本次改走官方重试`);
       const next = writeModelMode(this.cfg, { mode: 'official', reason: 'run-failed' });
       log('info', `模型路线切到官方（${next.mode}，since ${new Date(next.since).toISOString()}）`);
       this.lastFailover = Date.now();
@@ -304,8 +318,8 @@ export class AgentRunner {
       return { ...retry, route: 'official', failover: true };
     }
 
-    // 走官方的时候每轮记一行，方便回头看中转挂了多久；走中转不记，免得日志灌满
-    if (route === 'official') log('info', '本轮走官方（中转不可用期间）');
+    // 走官方的时候每轮记一行，方便回头看 go 挂了多久；走 go/中转不记，免得日志灌满
+    if (route === 'official') log('info', '本轮走官方（go 不通期间）');
     return { ...result, route };
   }
 

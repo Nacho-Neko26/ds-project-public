@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readJsonl, ensureDir, safeFileName, hhmm, log } from './util.mjs';
+import { guardFor } from './resource-guard.mjs';
 
 export const DEFAULT_HABITS_CONFIG = {
   enabled: true,
@@ -62,6 +63,10 @@ export async function updateHabits({ runner, cfg, chatKey, chatTitle }) {
   const conf = habitsConfig(cfg);
   if (!conf.enabled) return null;
   if (!chatKey.startsWith('group:')) return null; // 目前只学群
+
+  // 服务器紧张时后台整理先让路（2026-10-28 用户要求：先保文本回复）。
+  const gate = guardFor(cfg).allow('bg');
+  if (!gate.ok) { log('info', `[习惯学习] ${gate.reason}`); return null; }
 
   const { text, count, span } = recentTranscript(cfg.dataDir, chatKey, 120);
   if (count < 10) return null; // 太少，学不出东西

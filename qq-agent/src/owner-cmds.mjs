@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, spawn } from 'node:child_process';
 import { loadTable } from './commands-table.mjs';
+import { readMode, writeMode, describeMode } from './model-mode.mjs';
 
 const HOUR = 3600_000;
 
@@ -379,6 +380,36 @@ export async function runOwnerCommand({
       return true;
     }
 
+    // #模型 —— 2026-10-28 用户要求「中转要指令才切换」：
+    // 不说参数就是报现在走哪条；#模型 go / #模型 中转 / #模型 官方 才真的切。
+    case '模型':
+    case '模型路线': {
+      let want = String(extra || '').trim().toLowerCase();
+      // #模型路线 / #模型咋样 这类只问不切
+      if (/^(路线|路|$|\?|？|啥|什么)$/.test(want)) want = '';
+      const cur = readMode(cfg);
+      if (!want) {
+        await say(`现在走 ${describeMode(cur.mode)}`);
+        return true;
+      }
+      let target = '';
+      if (/^(go|opencode|opencode-go|open-code)$/.test(want)) target = 'go';
+      else if (/^(中转|relay|21r|relay21r)$/.test(want)) target = 'relay';
+      else if (/^(官方|official|deepseek|deepseek-official)$/.test(want)) target = 'official';
+      if (!target) {
+        await say('只认得 go / 中转 / 官方，别的我不切');
+        return true;
+      }
+      if (target === cur.mode) {
+        await say(`本来就走的 ${describeMode(cur.mode)}`);
+        return true;
+      }
+      const next = writeMode(cfg, { mode: target, reason: 'manual' });
+      note('info', `[${session.key}] #模型 ${target}：手动切路线 ${cur.mode} → ${target}`);
+      await say(`切到 ${describeMode(next.mode)} 了，下一轮生效`);
+      return true;
+    }
+
     default:
       return false;
   }
@@ -389,5 +420,6 @@ export function isOwnerCommandName(name) {
   return [
     '关机', '重启', '清屏', '导出全部数据', '导出数据', '修改核心设定', '查看完整日志', '看日志',
     '解除限制', '最高权限', '锁定关系', '格式化', '接管', '回来', '指令清单', '指令', '群聊',
+    '模型', '模型路线',
   ].includes(String(name || ''));
 }

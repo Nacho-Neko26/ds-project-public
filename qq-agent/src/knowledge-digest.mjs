@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir, readJsonl, safeFileName, hhmm, log } from './util.mjs';
 import { autoReviewKnowledge } from './kb-review.mjs';
+import { guardFor } from './resource-guard.mjs';
 
 export const DEFAULT_DIGEST = {
   enabled: true,
@@ -114,6 +115,10 @@ function renderPrompt(rows, chatKey, c, memesId = 'root') {
 export async function maybeDigestKnowledge({ cfg, runner, history, chatKey, note = log }) {
   const c = digestConfig(cfg);
   if (!c.enabled) return null;
+
+  // 服务器紧张时后台整理先让路（2026-10-28 用户要求：先保文本回复）。
+  const gate = guardFor(cfg).allow('bg');
+  if (!gate.ok) { note('info', `[知识整理] ${gate.reason}`); return null; }
   if (c.groupsOnly && !String(chatKey).startsWith('group:')) return null;
 
   const file = history.file(chatKey);
