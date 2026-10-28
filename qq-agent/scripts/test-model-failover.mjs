@@ -23,3 +23,11 @@ if (!r.ok) console.log('stderr tail =', String(r.stderr || '').slice(-600));
 const after = readMode(cfg);
 console.log('跑完后状态：', JSON.stringify(after));
 console.log(after.mode === 'official' ? '✓ 已经自己切到官方' : '✗ 没切');
+
+// 这是一次演练，不是真故障：演练完当场把路线放回 go。
+// 不放回去的话，看守要连着探通 3 次（10 分钟一轮）才会自己切回 go，
+// 中间这二三十分钟每一轮聊天都在烧官方余额——2026-10-28 就这么白烧了 0.26 元。
+if (after.mode === 'official') {
+  writeMode(cfg, { mode: 'go', reason: 'drill-restore' });
+  console.log('已复位：', JSON.stringify(readMode(cfg)));
+}

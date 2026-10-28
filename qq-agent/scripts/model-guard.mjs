@@ -15,6 +15,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { httpsJsonPost } from '../src/vision.mjs';
 import {
   readMode, writeMode, FAIL_THRESHOLD, OK_THRESHOLD, RECOVER_COOLDOWN_MS, MANUAL_MODES,
 } from '../src/model-mode.mjs';
@@ -62,29 +63,27 @@ async function probeGo() {
   const key = readCredential('OPENCODE_GO_API_KEY');
   if (!key) return { ok: false, why: '没有 OPENCODE_GO_API_KEY' };
   const startedAt = Date.now();
-  try {
-    const res = await fetch(PROBE_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${key}`,
-        'x-opencode-session': 'ses_model_guard_probe',
-      },
-      body: JSON.stringify({
-        model: PROBE_MODEL,
-        messages: [{ role: 'user', content: 'ok' }],
-        max_tokens: 1,
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    const elapsed = Date.now() - startedAt;
-    if (res.ok) return { ok: true, elapsed };
-    const body = (await res.text()).slice(0, 200);
-    return { ok: false, why: `HTTP ${res.status} ${body}`, elapsed };
-  } catch (e) {
-    return { ok: false, why: e.message, elapsed: Date.now() - startedAt };
-  }
+  // 2026-10-28：别再用全局 fetch。这台机器 opencode.ai 只给 IPv6，ECS 没有 IPv6 路由，
+  // fetch 会随机 1 秒后报 `fetch failed`（实测 8 次错 4 次），看守就误判 go 挂了反复切换。
+  const res = await httpsJsonPost({
+    url: PROBE_URL,
+    timeoutMs: 30_000,
+    body: JSON.stringify({
+      model: PROBE_MODEL,
+      messages: [{ role: 'user', content: 'ok' }],
+      max_tokens: 1,
+      stream: false,
+    }),
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${key}`,
+      'x-opencode-session': 'ses_model_guard_probe',
+    },
+  });
+  const elapsed = Date.now() - startedAt;
+  if (res.error) return { ok: false, why: res.error, elapsed };
+  if (res.status >= 200 && res.status < 300) return { ok: true, elapsed };
+  return { ok: false, why: `HTTP ${res.status} ${String(res.text).slice(0, 200)}`, elapsed };
 }
 
 function log(msg) {

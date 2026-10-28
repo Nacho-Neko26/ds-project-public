@@ -9,6 +9,7 @@ import { renderEmotionBlock, renderAngerLine } from './emotion.mjs';
 import { renderExpressionBlock } from './expression.mjs';
 import { tierVoice } from './tiers.mjs';
 import { readMode as readModelMode, writeMode as writeModelMode, looksLikeProviderFailure } from './model-mode.mjs';
+import { resolveVisionConfig, describeImageWithGo, DEFAULT_VISION } from './vision.mjs';
 
 /** 无工具时禁用的插件行 */
 const TOOL_ROWS = [
@@ -293,7 +294,7 @@ export class AgentRunner {
       // modelPatch: false 时完全不挂路线 patch —— 图片描述要把模型钉在能吃图的官方模型上，
       // 这里再追加一次路线 patch 会把它覆盖回去（2026-10-28 踩过：patch 写了官方，还是走中转）。
       const args = [...baseArgs(), ...(modelPatch ? ['--patch', this.modelPatches[r]] : [])];
-      const out = await this.#spawn([...args, ...(wantJson ? ['--json'] : []), prompt], env, timeoutMs, { stopOnFinal: opts.stopOnFinal === true });
+      const out = await this.#spawn([...args, ...(wantJson ? ['--json'] : []), prompt], env, timeoutMs, { stopOnFinal });
       return this.#finish(out, wantJson);
     };
 
@@ -430,8 +431,8 @@ export class AgentRunner {
   }
 
   /**
-   * 把本地图片交给 headless 的 read_image 工具，拿回一段客观文字描述。
-   * 用中立提示、不挂人设；工具开但权限只读。
+   * 把本地图片交给视觉模型，拿回一段客观文字描述。
+   * 主路：直连 go（默认 deepseek-v4.1-flash）；兜底：headless dsh + 官方 deepseek-flash。
    */
   async describeImage(file, hint = '', opts = {}) {
     // 大图先压小再送视觉模型（2026-10-28 用户要求：自动压缩、20 秒超时）
@@ -441,23 +442,27 @@ export class AgentRunner {
     // 动图拆帧拼图：一张网格图里塞了 N 帧，视觉模型很容易当成「N 张小图」来描述，
     // 于是角色在群里说「这十六张砸过来」（2026-10-26 用户抓到）。这里先把口径说死。
     const film = opts.filmstrip && Number(opts.filmstrip.frames) > 1 ? Number(opts.filmstrip.frames) : 0;
-    const prompt = [
-      '只做一件事：用 read_image 工具读取下面的图片，然后只输出一行 JSON，不要任何多余文字、不要代码块。',
-      '格式：{"summary":"一句话客观描述，40 字以内","tags":["搞笑"],"moodHints":["happy"],"use":["怼人"],"ocr":"图上文字原文，没有就空串"}',
-      film
-        ? `注意：这是一张「动图拆帧拼图」——同一张动图的 ${film} 帧按时间顺序拼在一张网格图里（左上→右下）。`
-          + `把它当成一个连贯的动作来描述：说清发生了什么、怎么变化；不许说成「${film} 张图」「多张小图」，也不要逐格罗列。`
-        : '',
-      'tags 只能从这九个里挑 1~3 个：搞笑、可爱、攻击性、敷衍、安慰、日常、涩涩、破防、加油。',
-      'moodHints 只能从这九个里挑 0~2 个：happy、encouraging、surprised、gentle、calm、confused、soft、sad、sleepy。',
-      // 2026-10-28 用户要「情绪、用途、图上文字一次给全，别再回头从描述里推断」。
-      // 描述是给人看的散文，用途是给检索用的标签，两者别混在一个字段里。
-      'use 是这张图适合拿去干什么，只能从这九个里挑 0~2 个：打招呼、道别、答应、拒绝、催促、安慰、夸人、看戏、接梗。',
-      'ocr 原样抄下图上的字，一个字都不要改、不要翻译；没有文字就留空串。',
-      'summary 要客观：不用第一人称、不加角色口吻；图里有文字就原样读出来。',
-      hint ? '（图片可能来自聊天气泡，附注：' + hint + '）' : '',
-      '图片路径：' + visionFile,
-    ].filter(Boolean).join('\n');
+    // 2026-10-28 用户拍板「默认用 flash」：先直连 go 的视觉模型。
+    // 省两头：一次 HTTP 3~5 秒（不用 spawn 一个 450MB 的 dsh），单价还低两个数量级；
+    // go 不通再回落到 headless dsh + 官方 deepseek-flash（老路，兜底用）。
+    const vcfg = resolveVisionConfig(this.cfg.raw);
+    if (vcfg.provider === 'go' && this.goKey) {
+      const r = await describeImageWithGo({
+        file: visionFile,
+        prompt: this.#describePrompt({ film, hint, forGo: true }),
+        key: this.goKey,
+        ...vcfg,
+      });
+      if (r.ok && r.text) {
+        log('info', `[看图] go/${r.model} ${r.ms}ms ${r.usage?.total_tokens ?? '?'} tokens`);
+        return { ok: true, text: r.text, route: 'go', model: r.model, elapsed: r.ms, timedOut: false };
+      }
+      log('warn', `[看图] go 没成（${r.error}），这次回落官方描述`);
+    } else if (vcfg.provider === 'dsh') {
+      log('info', '[看图] 按配置走 dsh 官方描述');
+    }
+
+    const prompt = this.#describePrompt({ film, hint, forGo: false, visionFile });
     this.#writeDescribePatch();
     await acquireDescribe();
     const __run = this.run({
@@ -472,8 +477,35 @@ export class AgentRunner {
       stopOnFinal: true,
       timeoutMs: 45000,
     });
+    __run.route = 'dsh';
     __run.finally(releaseDescribe);
     return __run;
+  }
+
+  /**
+   * 图片描述的提示词。两条路（go 直连 / dsh 读图）只差两点：
+   * 图怎么递进去（data URL 还是本地路径），以及要不要调 read_image 工具。
+   */
+  #describePrompt({ film, hint, forGo, visionFile }) {
+    return [
+      forGo
+        ? '只做一件事：直接看下面这张图，然后只输出一行 JSON，不要任何多余文字、不要代码块、不要调用工具。'
+        : '只做一件事：用 read_image 工具读取下面的图片，然后只输出一行 JSON，不要任何多余文字、不要代码块。',
+      '格式：{"summary":"一句话客观描述，40 字以内","tags":["搞笑"],"moodHints":["happy"],"use":["怼人"],"ocr":"图上文字原文，没有就空串"}',
+      film
+        ? `注意：这是一张「动图拆帧拼图」——同一张动图的 ${film} 帧按时间顺序拼在一张网格图里（左上→右下）。`
+          + `把它当成一个连贯的动作来描述：说清发生了什么、怎么变化；不许说成「${film} 张图」「多张小图」，也不要逐格罗列。`
+        : '',
+      'tags 只能从这九个里挑 1~3 个：搞笑、可爱、攻击性、敷衍、安慰、日常、涩涩、破防、加油。',
+      'moodHints 只能从这九个里挑 0~2 个：happy、encouraging、surprised、gentle、calm、confused、soft、sad、sleepy。',
+      // 2026-10-28 用户要「情绪、用途、图上文字一次给全，别再回头从描述里推断」。
+      // 描述是给人看的散文，用途是给检索用的标签，两者别混在一个字段里。
+      'use 是这张图适合拿去干什么，只能从这九个里挑 0~2 个：打招呼、道别、答应、拒绝、催促、安慰、夸人、看戏、接梗。',
+      'ocr 原样抄下图上的字，一个字都不要改、不要翻译；没有文字就留空串。',
+      'summary 要客观：不用第一人称、不加角色口吻；图里有文字就原样读出来。',
+      hint ? '（图片可能来自聊天气泡，附注：' + hint + '）' : '',
+      forGo ? '' : '图片路径：' + visionFile,
+    ].filter(Boolean).join('\n');
   }
 }
 
