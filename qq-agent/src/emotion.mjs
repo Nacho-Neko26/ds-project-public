@@ -424,8 +424,8 @@ export function renderEmotionBlock(s) {
 /* ---------- #心情 ---------- */
 
 export function parseMoodCommand(text) {
-  // 群里「溧月 #心情」这种，先把行首那声称呼剥掉再认指令（2026-10-28）
- const t = stripCallBeforeHash(String(text ?? ''), ['溧月']);
+  // 群里「溟月 #心情」这种，先把行首那声称呼剥掉再认指令（2026-10-28）
+ const t = stripCallBeforeHash(String(text ?? ''), ['溟月']);
   if (!t.includes('@你') && /@(?:号主|群友|全体成员)/.test(t)) return false;
   return /^[#＃]\s*心情$/.test(stripAtLabels(t));
 }

@@ -5,7 +5,7 @@ import { loadConfig } from './config.mjs';
 import { initCharacter, char, charName, selfRef, defaultNick, allNames, escapeRe } from './character.mjs';
 import { OneBot } from './onebot.mjs';
 import { HistoryStore, speakerLabel } from './context.mjs';
-import { renderSegments, renderForwardMessages, stripAtLabels, isFavorCommand } from './render.mjs';
+import { renderSegments, renderForwardMessages, stripAtLabels, isFavorCommand, FACE_NAMES, faceLabel } from './render.mjs';
 import { asksForVoice, extractVoiceDirective } from './voice-intent.mjs';
 import { AgentRunner, buildPrompt, readCredential, pickGroupMessage, countHumanSpeech } from './agent.mjs';
 import { startControl } from './control.mjs';
@@ -358,30 +358,8 @@ async function checkBalance({ force = false } = {}) {
 }
 
 /* ---------- 消息解析 ---------- */
-// renderSegments / atLabel 挪到 render.mjs，方便单测（index.mjs 一 import 就会起服务）
+// renderSegments / atLabel / FACE_NAMES 挪到 render.mjs，方便单测（index.mjs 一 import 就会起服务）
 
-
-/** QQ 黄脸 id → 名字（常用部分），给模型看素材目录用 */
-const FACE_NAMES = {
-  '0': '惊讶', '1': '撇嘴', '2': '色', '3': '发呆', '4': '得意', '5': '流泪',
-  '6': '害羞', '7': '闭嘴', '8': '睡', '9': '大哭', '10': '尴尬', '11': '发怒',
-  '12': '调皮', '13': '呲牙', '14': '微笑', '15': '难过', '16': '酷', '17': '冷汗',
-  '18': '抓狂', '19': '吐', '20': '偷笑', '21': '可爱', '22': '白眼', '23': '傲慢',
-  '24': '饥饿', '25': '困', '26': '惊恐', '27': '流汗', '28': '憨笑', '29': '悠闲',
-  '30': '奋斗', '31': '咒骂', '32': '疑问', '33': '嘘', '34': '晕', '35': '折磨',
-  '36': '衰', '37': '骷髅', '38': '敲打', '39': '再见', '40': '擦汗', '41': '抠鼻',
-  '42': '鼓掌', '43': '糗大了', '44': '坏笑', '45': '左哼哼', '46': '右哼哼',
-  '47': '哈欠', '48': '鄙视', '49': '委屈', '50': '快哭了', '51': '阴险', '52': '亲亲',
-  '53': '吓', '54': '可怜', '55': '菜刀', '56': '西瓜', '57': '啤酒', '58': '篮球',
-  '59': '乒乓', '60': '咖啡', '61': '饭', '62': '猪头', '63': '玫瑰', '64': '凋谢',
-  '65': '示爱', '66': '爱心', '67': '心碎', '68': '蛋糕', '69': '闪电', '70': '炸弹',
-  '71': '刀', '72': '足球', '73': '瓢虫', '74': '便便', '75': '月亮', '76': '太阳',
-  '77': '礼物', '78': '拥抱', '79': '强', '80': '弱', '81': '握手', '82': '胜利',
-  '83': '抱拳', '84': '勾引', '85': '拳头', '86': '差劲', '87': '爱你', '88': 'NO',
-  '89': 'OK', '90': '爱情', '91': '飞吻', '92': '跳跳', '93': '发抖', '94': '怄火',
-  '95': '转圈', '96': '磕头', '97': '回头', '98': '跳绳', '99': '挥手', '100': '激动',
-  '101': '街舞', '102': '献吻', '103': '左太极', '104': '右太极',
-};
 
 const SHARED_FILE = path.join(stashDir, '_shared.jsonl');
 
@@ -881,8 +859,8 @@ async function resolveQuote(replyId) {
           body += qd ? `[图：${qd}]` : '[图]';
           break;
         }
-        case 'mface':
-        case 'face': body += '[表情]'; break;
+        case 'mface': body += '[表情]'; break;
+        case 'face': body += faceLabel(d); break;
         case 'record': body += '[语音]'; break;
         case 'video': body += '[视频]'; break;
         default: break;
@@ -1505,7 +1483,7 @@ async function sendSelfImage(session) {
   const file = selfImagePath();
   if (!fs.existsSync(file)) throw new Error('形象图还没准备');
   const b64 = fs.readFileSync(file).toString('base64');
-  const seg = { type: 'image', data: { file: `base64://${b64}`, summary: '溧月的样子' } };
+  const seg = { type: 'image', data: { file: `base64://${b64}`, summary: '溟月的样子' } };
   if (session.kind === 'group') await ob.sendGroup(session.id, [seg]);
   else await ob.sendPrivate(session.id, [seg]);
   note('info', `[${session.key}] 发自己的形象图`);
@@ -1645,7 +1623,7 @@ async function applyStickerFeedback(session, collects, remarks, feedbacks) {
     const row = {
       t: new Date().toISOString(),
       uid: 0,
-      name: '溧月收的',
+      name: '溟月收的',
       seg: { type: 'image', data: { summary } },
       file: `collected/${name}`,
       local: to,
@@ -2811,7 +2789,7 @@ async function handleBatch(session, batch) {
     return;
   }
 
-  // 0.5 群里的 # 指令必须叫她（2026-10-28 用户定，m00122）：@溧月 或正文含「溧月」。
+  // 0.5 群里的 # 指令必须叫她（2026-10-28 用户定，m00122）：@溟月 或正文含「溟月」。
   // 没叫到的那种，当没看见——不执行、不吭声、也不进历史。私聊不设这道门。
   // 例外是桥自己的开关（#关机 #接管 #回来 #群聊）：那几个是主人拿来按电源的，
   // 卡在「先叫名字」上头会连叫醒的路都堵死，所以照旧放行。
@@ -2876,7 +2854,7 @@ async function handleBatch(session, batch) {
   }
 
   // 1.7 好感度查询：#好感度（任何人在群里 @ 它、或私聊发都行，不走模型）
-  // 2026-10-28 用户定（m00122）：群里发 # 指令必须先叫她（@溧月 或正文含「溧月」），
+  // 2026-10-28 用户定（m00122）：群里发 # 指令必须先叫她（@溟月 或正文含「溟月」），
   // 没叫到的一句都不办。这里按「这条消息自己有没有叫她」判，不继承批次里别人的 @。
   const favorMsg = batch.find((m) => isFavorCommand(commandText(cfg, m))
     && (session.kind === 'private' || calledByName(cfg, m)));
@@ -4039,7 +4017,7 @@ async function handleBatch(session, batch) {
   const fb = parseFeedbackDirective(sr.rest);
   await applyStickerFeedback(session, cs.list, sr.list, fb.list);
   const bodyRaw = fb.rest;
-  // 2026-10-27 用户定：以【溧月】身份说的对话内容走短文本规则；引用资料、检索到的长文本、
+  // 2026-10-27 用户定：以【溟月】身份说的对话内容走短文本规则；引用资料、检索到的长文本、
   // 对方点名要模仿的长文句式这类「不是她临场说的话」，在正文最前面单独一行写 __LONG__，
   // 桥就不再按 16 字/40~90 字去断它，整条当作长文发出去。
   // 标记必须落在第一行、而且后面要有正文，光写一个标记不算。
@@ -4495,7 +4473,7 @@ function personaAliasHit(cfg, text) {
 }
 
 /**
- *群聊里「这条指令到没到叫她」（2026-10-28用户定，m00122）：真 @她，或者正文里出现「溧月」。
+ *群聊里「这条指令到没到叫她」（2026-10-28用户定，m00122）：真 @她，或者正文里出现「溟月」。
  *只看单条——批次里别人 @过她，不代表这条也算；私聊永远算叫到了。
  */
 /** 群里叫她的那几个名字（没配置就是本名） */
@@ -4511,7 +4489,7 @@ function calledByName(cfg, m) {
 }
 
 /**
- * 判 # 指令时用的正文：群里「溧月 #好感度」这种，把行首那声称呼剥掉再看（2026-10-28）。
+ * 判 # 指令时用的正文：群里「溟月 #好感度」这种，把行首那声称呼剥掉再看（2026-10-28）。
  * 私聊、或者不带 # 的普通话说，原样返回。
  */
 function commandText(cfg, m) {
@@ -4602,7 +4580,7 @@ ob.on('event', (ev) => {
 
     // —— 谁的话才进模型（2026-10-28 用户定，改掉了原来的硬门禁）——
     // 判定逻辑抽到 agent.mjs 的 pickGroupMessage()，这里只负责执行：
-    //   ① 被 @ 或叫了「溧月」：进，而且这一轮必须回；
+    //   ① 被 @ 或叫了「溟月」：进，而且这一轮必须回；
     //   ② 叫过之后 wakeWindowMinutes 分钟内（默认 5）：群里普通消息也照喂，让她接着聊；
     //   ③ 其余情况按 reply.groupChance 真掷骰，命中才进来。
     //   以前这个概率只写进 prompt 当摆设，桥侧在下面直接 return 了，所以「不@就不回」。
@@ -4747,7 +4725,7 @@ ob.on('event', (ev) => {
       enqueue(session, {
         uid, name: senderName(ev), text: resolved, time: ev.time ? ev.time * 1000 : Date.now(), messageId: rawId,
         // 2026-10-28 修：这条消息自己有没有点到我，得跟着消息一起进缓冲。
-        // 以前没带，点唱判断读的是 m.atMe（永远 undefined），群里只能靠正文里出现「溧月」；
+        // 以前没带，点唱判断读的是 m.atMe（永远 undefined），群里只能靠正文里出现「溟月」；
         // 主人 @ 我说的「清唱认真的雪」于是被判成闲聊，模型去点原唱/念歌词，一首歌都没唱。
         atMe: mentioned,
       });

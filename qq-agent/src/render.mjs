@@ -1,10 +1,54 @@
-﻿import { stripCallBeforeHash } from './util.mjs';
+import { stripCallBeforeHash } from './util.mjs';
 /**
  * OneBot 消息段 → 模型能读的文本。
  *
  * 单独一个文件是为了能写单测：index.mjs 顶部就会连 NapCat 和起服务，
  * import 它等于启动整个机器人。
  */
+
+/**
+ * QQ 黄脸 id → 名字。放这里是因为 renderSegments 要把「收到的是哪个表情」告诉模型——
+ * 原来一律渲染成「[表情]」，模型根本不知道对方发的是爱心还是赞，只能瞎猜或者
+ * 回一句「就发个表情」，2026-10-29 用户点名要按表情含义来回话。
+ * 注意：这张表只到 104，QQ 后来新增的那些（106/264/265/282…）靠 data.raw.faceText 兜住，
+ * 所以 faceName() 先取 faceText 再查表，别反着来。
+ */
+export const FACE_NAMES = {
+  '0': '惊讶', '1': '撇嘴', '2': '色', '3': '发呆', '4': '得意', '5': '流泪',
+  '6': '害羞', '7': '闭嘴', '8': '睡', '9': '大哭', '10': '尴尬', '11': '发怒',
+  '12': '调皮', '13': '呲牙', '14': '微笑', '15': '难过', '16': '酷', '17': '冷汗',
+  '18': '抓狂', '19': '吐', '20': '偷笑', '21': '可爱', '22': '白眼', '23': '傲慢',
+  '24': '饥饿', '25': '困', '26': '惊恐', '27': '流汗', '28': '憨笑', '29': '悠闲',
+  '30': '奋斗', '31': '咒骂', '32': '疑问', '33': '嘘', '34': '晕', '35': '折磨',
+  '36': '衰', '37': '骷髅', '38': '敲打', '39': '再见', '40': '擦汗', '41': '抠鼻',
+  '42': '鼓掌', '43': '糗大了', '44': '坏笑', '45': '左哼哼', '46': '右哼哼',
+  '47': '哈欠', '48': '鄙视', '49': '委屈', '50': '快哭了', '51': '阴险', '52': '亲亲',
+  '53': '吓', '54': '可怜', '55': '菜刀', '56': '西瓜', '57': '啤酒', '58': '篮球',
+  '59': '乒乓', '60': '咖啡', '61': '饭', '62': '猪头', '63': '玫瑰', '64': '凋谢',
+  '65': '示爱', '66': '爱心', '67': '心碎', '68': '蛋糕', '69': '闪电', '70': '炸弹',
+  '71': '刀', '72': '足球', '73': '瓢虫', '74': '便便', '75': '月亮', '76': '太阳',
+  '77': '礼物', '78': '拥抱', '79': '强', '80': '弱', '81': '握手', '82': '胜利',
+  '83': '抱拳', '84': '勾引', '85': '拳头', '86': '差劲', '87': '爱你', '88': 'NO',
+  '89': 'OK', '90': '爱情', '91': '飞吻', '92': '跳跳', '93': '发抖', '94': '怄火',
+  '95': '转圈', '96': '磕头', '97': '回头', '98': '跳绳', '99': '挥手', '100': '激动',
+  '101': '街舞', '102': '献吻', '103': '左太极', '104': '右太极',
+};
+
+/** face 段 → 给模型看的中文名；查不到就空串，让调用方退回 id */
+export function faceName(data) {
+  const d = data ?? {};
+  const raw = String(d.raw?.faceText ?? '').replace(/^[/／]/, '').replace(/^\[|\]$/g, '').trim();
+  if (raw) return raw;
+  return FACE_NAMES[String(d.id ?? '')] ?? '';
+}
+
+/** face 段 → 正文里的标签。有名字写名字，没名字写 id，都没有退回「[表情]」 */
+export function faceLabel(data) {
+  const name = faceName(data);
+  if (name) return `[表情:${name}]`;
+  const id = String(data?.id ?? '').trim();
+  return id ? `[表情:#${id}]` : '[表情]';
+}
 
 /**
  * @ 段的人称标签。
@@ -31,7 +75,7 @@ function forwardItemLine(item) {
     if (t === 'text') line += d.text ?? '';
     else if (t === 'at') line += `@${d.qq} `;
     else if (t === 'image' || t === 'mface') line += '[图]';
-    else if (t === 'face') line += '[表情]';
+    else if (t === 'face') line += faceLabel(d);
     else if (t === 'record') line += '[语音]';
     else if (t === 'file' || t === 'onlinefile') line += '[文件]';
     else if (t === 'video') line += '[视频]';
@@ -110,7 +154,7 @@ export function renderSegments(message, { selfId = 0, ownerUids = [] } = {}) {
         text += `[[MFACE:${images.length}]]`;
         images.push({ url: d.url || '', kind: 'mface', summary: d.summary || '' });
         break;
-      case 'face': text += '[表情]'; break;
+      case 'face': text += faceLabel(d); break;
       // 注意措辞：不能给模型「你看不到」这种直接可复述的提示，
       // 否则它会开口就说「我看不到」。改成中性的「没法细看」，配合人设里
       // 「不许说自己看不见，打个哈哈岔开」这条。
@@ -169,8 +213,8 @@ export function stripAtLabels(text) {
  * 只认「@了你」或者「谁都没 @」的消息——别人 @号主、@群友 时发的 #好感度 不算叫它。
  */
 export function isFavorCommand(text) {
-  //群里「溧月 #好感度」这种，先把行首那声称呼剥掉再认指令（2026-10-28）
- const t = stripCallBeforeHash(String(text ?? ''), ['溧月']);
+  //群里「溟月 #好感度」这种，先把行首那声称呼剥掉再认指令（2026-10-28）
+ const t = stripCallBeforeHash(String(text ?? ''), ['溟月']);
   if (!t.includes('@你') && /@(?:号主|群友|全体成员)/.test(t)) return false;
   return /^[#＃]\s*好感度$/.test(stripAtLabels(t));
 }
