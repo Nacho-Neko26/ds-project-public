@@ -27,7 +27,7 @@ const CTRL = process.env.QQ_CTRL || 'http://127.0.0.1:3899';
 const DRY = process.argv.includes('--dry-run');
 const cfg = { dataDir: path.join(ROOT, 'data') };
 
-const PROBE_URL = 'https://new.21r.cn/v1/chat/completions';
+const PROBE_URL = 'https://opencode.ai/inference/go/openai/v1/chat/completions';
 const PROBE_MODEL = 'deepseek-v4.1-flash';
 
 function readCredential(name) {
@@ -62,13 +62,17 @@ async function notify(text) {
 
 /** 探一下中转还活不活。只花 1 个 token，比「切过去才发现死了」便宜得多。 */
 async function probeRelay() {
-  const key = readCredential('RELAY_API_KEY');
+  const key = readCredential('OPENCODE_GO_API_KEY');
   if (!key) return { ok: false, why: '没有 RELAY_API_KEY' };
   const startedAt = Date.now();
   try {
     const res = await fetch(PROBE_URL, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${key}`,
+        'x-opencode-session': 'ses_model_guard_probe',
+      },
       body: JSON.stringify({
         model: PROBE_MODEL,
         messages: [{ role: 'user', content: 'ok' }],

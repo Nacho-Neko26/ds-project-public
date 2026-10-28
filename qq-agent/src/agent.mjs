@@ -226,7 +226,7 @@ export class AgentRunner {
         log('warn', `写模型 patch 失败：${file}`, e.message);
       }
     };
-    write(this.modelPatches.relay, 'relay21r', 'deepseek-v4.1-flash', null);
+    write(this.modelPatches.relay, 'opencode-go', 'deepseek-v4.1-flash', null);
     write(this.modelPatches.official, 'deepseek-official', 'deepseek-flash');
   }
 

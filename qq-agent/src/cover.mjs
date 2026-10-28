@@ -40,6 +40,70 @@ export function ensureCoverDirs(cfg) {
   return p;
 }
 
+// —— 默认音色（QQ 点歌时默认用哪个音色唱）——
+// 为什么存在服务器：任务是从服务器排队、由本机执行器取走跑的，桥必须在排任务那一刻
+// 就知道音色；本机（RVCMAX 那台）负责把音色清单推上来，供 #音色 搜索/校验。
+const DEFAULT_VOICE_FILE = 'default-voice.json';
+const VOICE_CATALOG_FILE = 'voices.json';
+
+// 我们自带的 onnx 模型（models/*.onnx），其余音色一律走 RVCMAX 的 RVC_Core
+const ONNX_VOICES = new Set(['keroro', 'feiyu']);
+
+/** 音色 → 换声引擎：'' = 自带 onnx；'rvcmax' = 借 RVCMAX 的 RVC_Core */
+export function engineForVoice(voice) {
+  const v = String(voice || '').trim();
+  if (!v || ONNX_VOICES.has(v.toLowerCase())) return '';
+  return 'rvcmax';
+}
+
+/** 当前默认音色；没设过返回 null（= 自带 keroro） */
+export function readDefaultVoice(cfg) {
+  try {
+    const p = paths(cfg);
+    const raw = JSON.parse(fs.readFileSync(path.join(p.dir, DEFAULT_VOICE_FILE), 'utf8'));
+    const voice = String((raw && raw.voice) || '').trim();
+    if (!voice) return null;
+    return {
+      voice,
+      engine: engineForVoice(voice),
+      by: Number(raw.by) || 0,
+      at: Number(raw.at) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** 写默认音色（先写 .tmp 再 rename，桥不会读到写了一半的文件） */
+export function writeDefaultVoice(cfg, { voice, by = 0 }) {
+  const p = ensureCoverDirs(cfg);
+  const name = String(voice || '').trim();
+  if (!name) return null;
+  const rec = { voice: name, engine: engineForVoice(name), by: Number(by) || 0, at: Date.now() };
+  const file = path.join(p.dir, DEFAULT_VOICE_FILE);
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(rec, null, 2), 'utf8');
+  fs.renameSync(tmp, file);
+  return rec;
+}
+
+/** 本机推上来的音色清单（data/cover/voices.json）；还没传过就是空表 */
+export function readVoiceCatalog(cfg) {
+  try {
+    const p = paths(cfg);
+    const raw = JSON.parse(fs.readFileSync(path.join(p.dir, VOICE_CATALOG_FILE), 'utf8'));
+    const list = Array.isArray(raw && raw.voices) ? raw.voices : [];
+    return {
+      voices: list
+        .map((v) => ({ id: String(v.id || ''), name: String(v.name || ''), kind: String(v.kind || '') }))
+        .filter((v) => v.name),
+      updatedAt: Number(raw.updatedAt) || 0,
+    };
+  } catch {
+    return { voices: [], updatedAt: 0 };
+  }
+}
+
 /** 排一个翻唱任务，返回任务 id（桥回话要用）
  *  mode: 'vocal'（人声+伴奏）| 'acappella'（清唱，只出人声）
  *  params: {vocalGain, instGain, backingGain, transpose}（增益是百分比，100=原样） */

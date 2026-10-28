@@ -82,7 +82,10 @@ import {
 } from './util.mjs';
 import { detectSingRequest, detectSingAsk } from './sing-intent.mjs';
 import { recordIdentity, renderIdentityBlock, resolveMentions } from './identity.mjs';
-import { enqueueCover, rememberCoverJob, startCoverWatcher, ensureCoverDirs, executorOnline } from './cover.mjs';
+import {
+  enqueueCover, rememberCoverJob, startCoverWatcher, ensureCoverDirs, executorOnline,
+  readDefaultVoice, writeDefaultVoice, readVoiceCatalog, engineForVoice,
+} from './cover.mjs';
 import { pickOnlineReply, pickOfflineReply, pickAskSong, pickAskNotYet } from './cover-reply.mjs';
 import { pickLocalOkReply, pickLocalMissReply } from './local-reply.mjs';
 // 本机处理（2026-10-28 用户要求）：「传输文件用本机 dsh 操作后再发回」。
@@ -2864,7 +2867,7 @@ async function handleBatch(session, batch) {
   const cmdLine = hashLine || singCmd;
   const actor = singFrom || last;
   if (cmdLine) {
-    const FIXED_COMMANDS = ['好感度', '心情', '同步', '翻唱', '清唱', '本机', '语音库', '点播'];
+    const FIXED_COMMANDS = ['好感度', '心情', '同步', '翻唱', '清唱', '音色', '本机', '语音库', '点播'];
     const hashParsed = matchCommandLine(cmdLine) || {};
     let hashName = hashParsed.name || '';
     let hashExtra = String(hashParsed.extra || '');
@@ -2977,6 +2980,90 @@ async function handleBatch(session, batch) {
         }
         return;
       }
+      if (hashName === '音色') {
+        // 默认音色（2026-10-28 用户要）：选过一次，之后 #翻唱 / #清唱 不写音色就用它。
+        // 音色清单由本机执行器推上来（data/cover/voices.json）——服务器上没有 RVCMAX。
+        session.forceReplyUntil = 0;
+        const arg = String(hashExtra || '').trim();
+        const cat = readVoiceCatalog(cfg);
+        const cur = readDefaultVoice(cfg);
+        const normName = (s) => String(s || '').toLowerCase().replace(/\s+/g, '');
+        const showCur = cur && cur.voice !== 'keroro'
+          ? `现在默认唱「${cur.voice}」（走 RVCMAX）`
+          : '现在默认用自带的 keroro';
+
+        // 只查看
+        if (!arg || /^(看|查看|列表|list|有什么|状态)$/i.test(arg)) {
+          const lines = [showCur, '换：#音色 音色名', '找：#音色 查 关键词', '换回自带：#音色 默认'];
+          lines.push(cat.voices.length
+            ? `本机现有 ${cat.voices.length} 个音色可挑`
+            : '本机还没把音色清单传上来，过一会儿再查');
+          await sendText(session, lines.join('\n'), null);
+          return;
+        }
+
+        // 搜索
+        const sea = arg.match(/^(?:查|搜|找|搜索)\s*(.*)$/);
+        if (sea) {
+          const q = String(sea[1] || '').trim().toLowerCase();
+          if (!q) {
+            await sendText(session, '查什么，像这样：#音色 查 白花', null);
+            return;
+          }
+          const all = cat.voices.filter((v) => v.name.toLowerCase().includes(q) || v.id.includes(q));
+          if (!all.length) {
+            await sendText(session, cat.voices.length ? `没搜到「${q}」这个音色` : '音色清单还没传上来，过一会儿再搜', null);
+            return;
+          }
+          const lines = all.slice(0, 10).map((v, i) => `${i + 1}. ${v.name}${v.id ? `（${v.id}）` : ''}`);
+          const more = all.length > 10 ? `\n……还有 ${all.length - 10} 个` : '';
+          await sendText(session, `搜到 ${all.length} 个：\n${lines.join('\n')}${more}\n想用哪个就发 #音色 名字`, null);
+          note('info', `[${session.key}] 音色搜索「${q}」命中 ${all.length} 个`);
+          return;
+        }
+
+        // 下面几个都是「改」——只有主人能改，别人只能查
+        if (!canActOnMe) {
+          await sendText(session, '这个只有主人能让我改', null);
+          note('info', `[${session.key}] #音色 被非主人拒绝：${actor.name}(${actor.uid})`);
+          return;
+        }
+
+        // 换回自带
+        if (/^(默认|复位|重置|关掉|取消|keroro|原版)$/i.test(arg)) {
+          writeDefaultVoice(cfg, { voice: 'keroro', by: Number(actor.uid) });
+          await sendText(session, '行，换回自带的 keroro 了', null);
+          note('info', `[${session.key}] 默认音色重置为 keroro`);
+          return;
+        }
+
+        // 按名字/编号挑：先精确（名字或 id），退一步按名字包含
+        const want = normName(arg);
+        const byExact = cat.voices.filter((v) => normName(v.name) === want || String(v.id) === arg);
+        const byPart = byExact.length ? [] : cat.voices.filter((v) => normName(v.name).includes(want));
+        let picked = byExact.length ? byExact[0] : (byPart.length === 1 ? byPart[0] : null);
+        if (!picked && byPart.length > 1) {
+          const names = byPart.slice(0, 8).map((v) => v.name).join('、');
+          await sendText(session, `对得上好几个：${names}\n说全一点，直接发 #音色 名字`, null);
+          return;
+        }
+        // 清单为空 = 本机还没传上来：先按说的名字记下，唱不出来再改
+        if (!picked && !cat.voices.length) {
+          writeDefaultVoice(cfg, { voice: arg, by: Number(actor.uid) });
+          await sendText(session, `清单还没传上来，我先按「${arg}」记着，要是唱不出来再改`, null);
+          note('warn', `[${session.key}] 默认音色先记为「${arg}」（清单为空，未校验）`);
+          return;
+        }
+        if (!picked) {
+          await sendText(session, `没这个音色「${arg}」，搜一下：#音色 查 ${arg.slice(0, 4)}`, null);
+          return;
+        }
+        writeDefaultVoice(cfg, { voice: picked.name, by: Number(actor.uid) });
+        const engNote = engineForVoice(picked.name) ? '（走 RVCMAX）' : '（自带模型）';
+        await sendText(session, `行，以后唱默认就用「${picked.name}」了${engNote}`, null);
+        note('info', `[${session.key}] 默认音色 → ${picked.name}（${picked.id || '按名字'}）`);
+        return;
+      }
       if (hashName === '翻唱' || hashName === '清唱') {
         session.forceReplyUntil = 0;
         const accapella = hashName === '清唱';
@@ -3005,12 +3092,15 @@ async function handleBatch(session, batch) {
         const segment = parsed.segment && parsed.segment.full
           ? null
           : (parsed.segment || { chorus: true });
+        // 音色：命令里写了就用写的，没写就用 #音色 定的默认（默认存在服务器上）
+        const defVoice = readDefaultVoice(cfg);
+        const useVoice = parsed.voice || (defVoice && defVoice.voice) || '';
         const job = enqueueCover(cfg, {
           song, chat: session.key, by: Number(actor.uid),
           mode: accapella ? 'acappella' : 'vocal',
-          voice: parsed.voice || undefined,
-          // 指定了音色就走 RVCMAX 引擎（它那 397 个音色，含 .yuan 加密模型）
-          engine: parsed.voice && parsed.voice !== 'keroro' ? 'rvcmax' : '',
+          voice: useVoice || undefined,
+          // 非自带模型（keroro/feiyu）就走 RVCMAX 的 RVC_Core（397 个音色，含 .yuan 加密模型）
+          engine: engineForVoice(useVoice),
           segment: segment || undefined,
           // 用户说「重唱/重新唱」时强制重跑，不查翻唱库
           redo: !!parsed.redo,
@@ -3029,7 +3119,7 @@ async function handleBatch(session, batch) {
           parsed.backingGain != null ? `和声${parsed.backingGain}%` : '',
           parsed.transpose != null ? `变调${parsed.transpose > 0 ? '+' : ''}${parsed.transpose}` : '',
           parsed.indexRate != null ? `贴合${parsed.indexRate}%` : '',
-          parsed.voice ? `音色${parsed.voice}` : '',
+          useVoice ? `音色${useVoice}` : '',
         ].filter(Boolean).join(' ');
         // 在线回话：随机拼一句「马上要唱」的话（不写死整句），也不提排队、不提要跑多久
         await sendText(session, `${pickOnlineReply(word, { full: segment === null })}${tuned ? `（${tuned}）` : ''}`, null);
