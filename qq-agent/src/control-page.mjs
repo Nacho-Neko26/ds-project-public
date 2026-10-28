@@ -438,7 +438,7 @@ let lastLog = '';
 function renderOverview(s){
   const st = s.stats || {};
   $('ov-stats').innerHTML =
-    stat('NapCat 连接', s.connected ? '已连接' : '未连接', s.connected ? 'ok' : 'bad') +
+    stat('SnowLuma 连接', s.connected ? '已连接' : '未连接', s.connected ? 'ok' : 'bad') +
     stat('账号', s.self ? ((s.self.nickname || '—') + ' (' + (s.self.user_id || '') + ')') : '—') +
     stat('回复状态', s.paused ? '已急停' : '正常', s.paused ? 'bad' : 'ok') +
     stat('忙碌', fmt(s.busy) + ' / ' + fmt(s.maxConcurrent)) +

@@ -33,7 +33,7 @@ const ws = new WebSocket(url);
 await new Promise((resolve, reject) => {
   ws.addEventListener('open', resolve);
   ws.addEventListener('error', reject);
-  setTimeout(() => reject(new Error('连 NapCat 超时')), 10000);
+  setTimeout(() => reject(new Error('连 SnowLuma 超时')), 10000);
 });
 let seq = 0;
 function call(action, params) {

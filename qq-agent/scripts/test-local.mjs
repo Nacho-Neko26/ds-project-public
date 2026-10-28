@@ -3,7 +3,7 @@
  * 本机处理单测：node scripts/test-local.mjs
  *
  * 覆盖能纯函数验证的部分：路径白名单（extractFileDirective）、排队与回执、
- * 心跳判断、「最近收到的文件」记忆。真正调用 NapCat 发文件那一步（sendFileToChat）
+ * 心跳判断、「最近收到的文件」记忆。真正调用 SnowLuma 发文件那一步（sendFileToChat）
  * 和本机 python 的执行要靠云端 + 本机实测（见 docs/qq-commands.md）。
  */
 import fs from 'node:fs';

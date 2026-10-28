@@ -1,6 +1,6 @@
 /**
  * 端到端试一条：用生产配置渲染，再经 OneBot 真发到号主私聊。
- * 只用来验证 NapCat 能不能吃新管线产出的 mp3。
+ * 只用来验证 SnowLuma 能不能吃新管线产出的 mp3。
  */
 import { loadConfig } from '../src/config.mjs';
 import { renderVoice } from '../src/voice.mjs';

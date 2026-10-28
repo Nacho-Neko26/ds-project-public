@@ -23,7 +23,7 @@ function cfgOf(cfg) {
     containerDir: c.containerDir || cfg.raw.voice?.containerDir || '/app/data/voice',
     maxKeep: Number(c.maxKeep) || 20,
     // 多长的成品还发「语音条」。实测（2026-10-26）QQ 连 5 分半的整首歌都收得下
-    // （NapCat 会转成 silk，retcode 0），所以默认放到 180 秒，短歌直接就是一条语音；
+    // （SnowLuma 会转成 silk，retcode 0），所以默认放到 180 秒，短歌直接就是一条语音；
     // 想全发语音条把 config.json 的 cover.voiceMaxSeconds 调大（0 = 一律发语音条）。
     voiceMaxSeconds: c.voiceMaxSeconds === undefined ? 180 : Number(c.voiceMaxSeconds),
   };

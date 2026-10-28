@@ -23,7 +23,7 @@ const execFileAsync = promisify(execFile);
  *
  * 踩过的坑：
  *   - {type:"music",data:{type:"163",id}} → retcode 1200「消息体无法解析」。
- *     原因是 NapCat 把这段丢给 musicSignUrl 签名时只给了 id，签名服务回「缺少 title」，
+ *     原因是 SnowLuma 把这段丢给 musicSignUrl 签名时只给了 id，签名服务回「缺少 title」，
  *     回来的是残缺 ark，QQ 拒收。自己把 title/singer/封面/音频直链填齐走 type:"custom" 才签得出来。
  *   - 音乐卡片发出去了 retcode=0，也不代表点开能播；别把「发送成功」当「能播放」。
  */
@@ -177,7 +177,7 @@ export async function makeClip(src, dest, { startSeconds = 20, seconds = 60, ffm
 
 /**
  * 发一段能直接播放的语音片段。
- * 语音文件要先落到 NapCat 容器能读到的目录（config.voice.dir → containerDir）。
+ * 语音文件要先落到 SnowLuma 容器能读到的目录（config.voice.dir → containerDir）。
  */
 async function sendSongVoice({ ob, cfg, session, song, note }) {
   const conf = musicConfig(cfg);

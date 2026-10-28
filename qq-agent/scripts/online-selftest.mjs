@@ -1,5 +1,5 @@
 /**
- * 上线自检：NapCat 登录后，确认 OneBot 通道真的能用。
+ * 上线自检：SnowLuma 登录后，确认 OneBot 通道真的能用。
  *
  *   node scripts/online-selftest.mjs          # 查登录态 / 账号 / 状态
  *   node scripts/online-selftest.mjs --send   # 再给指定 QQ 发一条测试消息
@@ -17,7 +17,7 @@ const ws = new WebSocket(url);
 await new Promise((resolve, reject) => {
   ws.addEventListener('open', resolve);
   ws.addEventListener('error', reject);
-  setTimeout(() => reject(new Error('连 NapCat 超时')), 10000);
+  setTimeout(() => reject(new Error('连 SnowLuma 超时')), 10000);
 });
 
 let seq = 0;

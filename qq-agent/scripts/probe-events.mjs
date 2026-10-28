@@ -1,4 +1,4 @@
-// 原始事件探针：把 NapCat 推过来的所有事件写到 logs/probe.jsonl，用于排查「消息到了但桥没收到」
+// 原始事件探针：把 SnowLuma 推过来的所有事件写到 logs/probe.jsonl，用于排查「消息到了但桥没收到」
 // 用法: node scripts/probe-events.mjs [秒数]
 import fs from 'node:fs';
 import path from 'node:path';

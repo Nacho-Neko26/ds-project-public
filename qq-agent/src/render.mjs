@@ -2,7 +2,7 @@ import { stripCallBeforeHash } from './util.mjs';
 /**
  * OneBot 消息段 → 模型能读的文本。
  *
- * 单独一个文件是为了能写单测：index.mjs 顶部就会连 NapCat 和起服务，
+ * 单独一个文件是为了能写单测：index.mjs 顶部就会连 SnowLuma 和起服务，
  * import 它等于启动整个机器人。
  */
 
@@ -88,7 +88,7 @@ function forwardItemLine(item) {
 
 /**
  * 合并转发（聊天记录卡片）→ 模型能读的正文。
- * 2026-10-26 实测：NapCat 4.18.41 直接在段的 data.content 里塞了完整 messages 数组，
+ * 2026-10-26 实测：SnowLuma 4.18.41 直接在段的 data.content 里塞了完整 messages 数组，
  * 不用再调 get_forward_msg（那个接口也在，data.content 为空时才需要兜底）。
  * 长度有上限：条数 40、总字 1500，超了就说「还有 N 条没展开」——
  * 一条转发几十条长文，不截断会把整轮 prompt 顶爆。
@@ -163,7 +163,7 @@ export function renderSegments(message, { selfId = 0, ownerUids = [] } = {}) {
         records.push({ file: d.file || '', url: d.url || '', duration: d.duration || 0 });
         break;
       case 'video': text += '[对方发了段视频，你没细看]'; break;
-      // 文件：NapCat 的 file 段给 `file`（文件名）/`file_id`/`file_size`/`url`，
+      // 文件：SnowLuma 的 file 段给 `file`（文件名）/`file_id`/`file_size`/`url`，
       // 早期写法读的是 `d.name`，字段名对不上，群里收到的文件一律显示成「[文件:]」。
       // 这里只留占位符，真正的下载和落盘交给 index.mjs 的 resolveFiles（异步）。
       case 'file':
@@ -173,11 +173,11 @@ export function renderSegments(message, { selfId = 0, ownerUids = [] } = {}) {
           url: d.url || '',
           fileId: d.file_id || '',
           size: Number(d.file_size ?? d.size ?? 0) || 0,
-          // SnowLuma 取私聊文件直链要 file_hash，NapCat 不给（空串，走不到那条路也无所谓）
+          // SnowLuma 取私聊文件直链要 file_hash，SnowLuma 不给（空串，走不到那条路也无所谓）
           fileHash: d.file_hash || d.fileHash || '',
         });
         break;
-      // 在线文件（QQ 的「发送文件」走内核 onlinefile 段，NapCat 单独给了 type）
+      // 在线文件（QQ 的「发送文件」走内核 onlinefile 段，SnowLuma 单独给了 type）
       case 'onlinefile':
         text += `[[FILE:${files.length}]]`;
         files.push({

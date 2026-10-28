@@ -2,7 +2,7 @@
  * 戳一戳（2026-10-28 用户 m03434「可以戳别人，也可以感应别人的戳一戳」，m03600「按你的方案执行」）。
  *
  * 两件事：
- *   ① 感应：NapCat 发来 notice / notify / sub_type=poke / target_id=自己 时，
+ *   ① 感应：SnowLuma 发来 notice / notify / sub_type=poke / target_id=自己 时，
  *      按关系档位决定要不要有反应，连着戳太多次就烦了。
  *   ② 主动：模型输出一行 `__POKE__`（可选 `__POKE__ @某人`）→ 桥真发一次 send_poke。
  *

@@ -618,7 +618,7 @@ export async function renderTunedVoice(vcfg, opts = {}) {
   };
 }
 
-/** 给音频尾部补一段静音，避免 NapCat/QQ 转码时把最后一个字切掉 */
+/** 给音频尾部补一段静音，避免 SnowLuma/QQ 转码时把最后一个字切掉 */
 async function padTailSilence(vcfg, file, seconds) {
   const tmp = file.replace(/\.mp3$/, '.pad.mp3');
   try {
@@ -822,7 +822,7 @@ export async function renderBailianVoice(vcfg, opts = {}) {
   const out = path.join(dir, name);
   fs.writeFileSync(out, buf);
 
-  // 尾部补 0.5 秒静音：QQ/NapCat 转码会把尾巴吃掉，垫一点就不会切到最后一个字
+  // 尾部补 0.5 秒静音：QQ/SnowLuma 转码会把尾巴吃掉，垫一点就不会切到最后一个字
   const pad = Number(conf.padTailSeconds ?? 0.5);
   if (pad > 0) {
     try { await padTailSilence(vcfg, out, pad); } catch { /* 垫尾失败不影响发送 */ }

@@ -187,7 +187,7 @@ export function extractFileDirective(text, { roots = [] } = {}) {
 
 /**
  * 把一个服务器上的文件发进会话。
- * 必须先进 napcat 的 voice 目录——NapCat 的 upload_*_file 只认容器内路径，
+ * 必须先进 napcat 的 voice 目录——SnowLuma 的 upload_*_file 只认容器内路径，
  * 直接给 /root/... 会回「识别URL失败」。名字加 local- 前缀，既避免撞名也方便清理。
  */
 export async function sendFileToChat({ ob, cfg, chat, filePath, name }) {

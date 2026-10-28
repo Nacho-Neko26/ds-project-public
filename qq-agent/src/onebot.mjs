@@ -3,7 +3,7 @@ import { log } from './util.mjs';
 
 /**
  * OneBot 11 正向 WebSocket 客户端。
- * NapCat 作为 WS 服务器，本进程连上去；事件与 API 响应走同一条连接，
+ * SnowLuma 作为 WS 服务器，本进程连上去；事件与 API 响应走同一条连接，
  * 用 echo 字段区分（事件有 post_type，响应有 echo）。
  */
 export class OneBot extends EventEmitter {
@@ -43,22 +43,22 @@ export class OneBot extends EventEmitter {
     }
     if (this.token) url.searchParams.set('access_token', this.token);
 
-    log('info', `正在连接 NapCat: ${url.origin}${url.pathname}`);
+    log('info', `正在连接 SnowLuma: ${url.origin}${url.pathname}`);
     const ws = new WebSocket(url);
     this.#ws = ws;
 
     ws.addEventListener('open', () => {
       this.connected = true;
       this.#retry = 0;
-      log('info', 'NapCat 已连接');
+      log('info', 'SnowLuma 已连接');
       this.emit('ready');
     });
 
     ws.addEventListener('message', (ev) => this.#onMessage(ev.data));
 
     ws.addEventListener('error', (ev) => {
-      log('warn', `NapCat 连接错误: ${ev?.message ?? 'unknown'}`);
-      // 有些失败只报 error、不发 close（NapCat 重启时踩过），连接会永久卡死 → 这里补一次重连
+      log('warn', `SnowLuma 连接错误: ${ev?.message ?? 'unknown'}`);
+      // 有些失败只报 error、不发 close（SnowLuma 重启时踩过），连接会永久卡死 → 这里补一次重连
       if (!this.connected) this.#scheduleReconnect();
     });
 
@@ -74,7 +74,7 @@ export class OneBot extends EventEmitter {
     if (this.#stopped) return;
     clearTimeout(this.#reconnectTimer);
     const delay = Math.min(30000, 1000 * 2 ** this.#retry++);
-    log('warn', `NapCat 连接断开，${Math.round(delay / 1000)}s 后重连`);
+    log('warn', `SnowLuma 连接断开，${Math.round(delay / 1000)}s 后重连`);
     this.#reconnectTimer = setTimeout(() => this.#connect(), delay);
   }
 
@@ -103,7 +103,7 @@ export class OneBot extends EventEmitter {
   call(action, params = {}, timeoutMs = 20000) {
     return new Promise((resolve, reject) => {
       if (!this.#ws || this.#ws.readyState !== 1) {
-        reject(new Error('NapCat 未连接'));
+        reject(new Error('SnowLuma 未连接'));
         return;
       }
       const echo = String(++this.#seq);

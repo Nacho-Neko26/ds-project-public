@@ -2,10 +2,10 @@
  * QQ 文件接收：把消息里 file 段（别人发来的文件）落到本地，给模型一个能读的路径。
  *
  * 两个来源（2026-10-27 读 napcat.mjs 确认）：
- *  - 段里带 url：NapCat 的 PacketApi 启用时会给（日志 `[Core] [Packet] 使用 NativePacketClient`），直接 fetch 即可；
- *  - 段里只有 file_id：调 OneBot `get_file` 让 NapCat 下到容器 temp，再按挂载关系换成宿主路径拷出来。
+ *  - 段里带 url：SnowLuma 的 PacketApi 启用时会给（日志 `[Core] [Packet] 使用 NativePacketClient`），直接 fetch 即可；
+ *  - 段里只有 file_id：调 OneBot `get_file` 让 SnowLuma 下到容器 temp，再按挂载关系换成宿主路径拷出来。
  *
- * 单独一个文件是为了能写单测：index.mjs 一 import 就会连 NapCat、起服务。
+ * 单独一个文件是为了能写单测：index.mjs 一 import 就会连 SnowLuma、起服务。
  */
 import fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
@@ -113,7 +113,7 @@ export async function downloadFile(url, destDir, name, timeoutMs = 60000) {
   }
 }
 
-/** 把 NapCat 已经下好的文件（容器内路径已换成宿主路径）拷进 destDir。 */
+/** 把 SnowLuma 已经下好的文件（容器内路径已换成宿主路径）拷进 destDir。 */
 export function copyLocalFile(src, destDir, name) {
   if (!src || !fs.existsSync(src)) return null;
   try {

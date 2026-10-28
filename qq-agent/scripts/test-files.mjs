@@ -2,7 +2,7 @@
 /**
  * QQ 收文件单测：node scripts/test-files.mjs
  * 覆盖纯函数（文件名清洗/大小/去重/文本预览）和 renderSegments 的 file/onlinefile 段。
- * 真正下载 + 落盘要靠服务器的 NapCat，那部分在云端实测（见 docs/qq-commands.md）。
+ * 真正下载 + 落盘要靠服务器的 SnowLuma，那部分在云端实测（见 docs/qq-commands.md）。
  */
 import fs from 'node:fs';
 import os from 'node:os';

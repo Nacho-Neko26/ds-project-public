@@ -38,7 +38,7 @@
 ### 1.1 三条必须先说清的前置问题
 
 **P0：表情发不出去（现在就是坏的）。**
-`materializeSeg` 的顺序是 `local 存在 → 用`／`否则 seg.data.url 下载`／`都不行 → return seg`（`src/index.mjs:560–565`）。云端是 Linux，`C:\...` 不存在、也没有 url，于是把一个只有 summary 的 image 段丢给 NapCat，**静默失败且无日志**。§16 做得再好，检索出来的图仍然发不出去。
+`materializeSeg` 的顺序是 `local 存在 → 用`／`否则 seg.data.url 下载`／`都不行 → return seg`（`src/index.mjs:560–565`）。云端是 Linux，`C:\...` 不存在、也没有 url，于是把一个只有 summary 的 image 段丢给 SnowLuma，**静默失败且无日志**。§16 做得再好，检索出来的图仍然发不出去。
 
 **P0：本机没有验收基线。**
 `test-emotion.mjs` / `test-expression.mjs` / `test-animation.mjs` 在本机**不存在**（`scripts/` 下只有 test-anger / test-favor / test-balance 等 12 个老测试）。记忆里「33 + 9 + 14 项全绿」是在别处跑的。改造前必须先拿到或重建这三个测试，否则改完无法证明没回归。

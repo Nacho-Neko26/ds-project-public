@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
  * 听语音。
  *
  * QQ 个人号发来的语音是 SILK（`#!SILK_V3`），系统 ffmpeg 解不了。
- * NapCat 自己带了解码器，所以先让它把语音转成 wav（`get_record out_format=wav`），
+ * SnowLuma 自己带了解码器，所以先让它把语音转成 wav（`get_record out_format=wav`），
  * 再统一用 ffmpeg 转成 16k 单声道，交给本机的 SenseVoice 服务转文字。
  *
  * 三步任何一步失败都只是「没听清」，不影响回复——不能因为听不见就把整轮带崩。
@@ -41,7 +41,7 @@ async function toWav16k(input, dest, ffmpeg = 'ffmpeg') {
   }
 }
 
-/** 从 NapCat 拿语音文件：优先让它转 wav，退而求其次下载 url 原文件 */
+/** 从 SnowLuma 拿语音文件：优先让它转 wav，退而求其次下载 url 原文件 */
 async function fetchRecordSource({ ob, rec, dir, note }) {
   const stamp = crypto.createHash('sha1').update(`${rec.file || ''}|${rec.url || ''}|${Date.now()}`)
     .digest('hex').slice(0, 12);

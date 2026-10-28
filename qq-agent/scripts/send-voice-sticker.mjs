@@ -50,7 +50,7 @@ const SHARED = path.join(cfg.agentCwd, 'stickers', '_shared.jsonl');
 const sharedRows = readJsonl(SHARED, 1000);
 const stickerIdx = String(args.sticker || '15').split(',').map((x) => Number(x));
 
-/** 本地图 → base64，NapCat 不依赖挂载 */
+/** 本地图 → base64，SnowLuma 不依赖挂载 */
 function stickerSeg(i) {
   const rec = sharedRows[i];
   if (!rec) throw new Error(`共享图库 #${i} 不存在`);
@@ -70,7 +70,7 @@ const ws = new WebSocket(wsUrl);
 await new Promise((resolve, reject) => {
   ws.addEventListener('open', resolve);
   ws.addEventListener('error', reject);
-  setTimeout(() => reject(new Error('连 NapCat 超时')), 10000);
+  setTimeout(() => reject(new Error('连 SnowLuma 超时')), 10000);
 });
 
 let seq = 0;

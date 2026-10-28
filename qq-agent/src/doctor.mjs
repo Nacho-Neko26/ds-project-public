@@ -48,10 +48,10 @@ if (cfg.groupAllow.size) {
 if (cfg.trusted.size) ok(`可用工具的人 ${[...cfg.trusted].join(', ')}`);
 else warn('没有可信用户：谁都不能让它动工具');
 
-console.log('\nNapCat');
+console.log('\nSnowLuma');
 const ws = await tryWs(cfg.raw.napcat.wsUrl, cfg.raw.napcat.token);
 if (ws.ok) ok(`OneBot WebSocket 可用 (${cfg.raw.napcat.wsUrl})`);
-else bad(`连不上 ${cfg.raw.napcat.wsUrl}：${ws.reason}（NapCat 没启动或没开 WS 服务器）`);
+else bad(`连不上 ${cfg.raw.napcat.wsUrl}：${ws.reason}（SnowLuma 没启动或没开 WS 服务器）`);
 
 if (process.argv.includes('--agent')) {
   console.log('\n模型连通性（会真的烧一次调用）');

@@ -98,7 +98,7 @@ export function auditOutbound(text, { ids = [], tokens = [] } = {}) {
 
 /**
  * CQ 码转义：SnowLuma 用 array 格式，文本段本来不解析 CQ 码，
- * 但这层随手加上——以后换回管得了 CQ 的端（NapCat 的 string 格式）就不会被注入。
+ * 但这层随手加上——以后换回管得了 CQ 的端（SnowLuma 的 string 格式）就不会被注入。
  */
 export function escapeCq(text) {
   return String(text ?? '').replace(/\[CQ:/g, '[CQ：');

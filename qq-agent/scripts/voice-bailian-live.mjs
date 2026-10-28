@@ -1,6 +1,6 @@
 /**
  * 端到端：走桥里的 renderBailianVoice，再真发到号主私聊。
- * 用来验证 桥 → 本机 TTS 服务 → 百炼 → NapCat 整条链。
+ * 用来验证 桥 → 本机 TTS 服务 → 百炼 → SnowLuma 整条链。
  */
 import { loadConfig } from '../src/config.mjs';
 import { renderBailianVoice } from '../src/voice.mjs';

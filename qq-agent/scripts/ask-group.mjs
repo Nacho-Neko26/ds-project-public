@@ -25,7 +25,7 @@ function call(action, params) {
   });
 }
 
-// 用 @ 的方式发（NapCat 支持 at 段）
+// 用 @ 的方式发（SnowLuma 支持 at 段）
 const self = await call('get_login_info', {});
 const selfId = self.data?.user_id;
 const r = await call('send_group_msg', {

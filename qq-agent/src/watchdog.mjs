@@ -5,7 +5,7 @@
  * 为什么要有它：协议端或者桥挂了之后，两边都「活着」，但谁也连不上谁。以前只能人工上去
  * 抓二维码给人扫。这个脚本按分钟自检，能自己救的自己救，救不了才喊人。
  *
- * 2026-10-28 从 NapCat 换成 SnowLuma：容器名 snowluma、compose 在 /root/snowluma、
+ * 2026-10-28 从 SnowLuma 换成 SnowLuma：容器名 snowluma、compose 在 /root/snowluma、
  * 判断「号还在不在」改成直接问 OneBot 的 get_login_info——比翻日志里的报错行准，
  * 因为 SnowLuma 掉线时容器本身是活的，只是 QQ 退回登录界面。
  *

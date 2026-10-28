@@ -802,7 +802,7 @@ async function resolveImages(text, images, trusted, meta = {}) {
 
 /* ---------- 引用回复：把「他引用的那条」捞回来 ---------- */
 // QQ 的 reply 段只带被引用消息的 id，正文一个字都没有；不捞的话模型只能看见
-// 引用者自己那句话，完全不知道在接什么。用 NapCat 的 get_msg 取原文，按 id 缓存。
+// 引用者自己那句话，完全不知道在接什么。用 SnowLuma 的 get_msg 取原文，按 id 缓存。
 const QUOTE_CACHE = new Map(); // messageId → 渲染好的提示文本（空串表示取不到）
 const QUOTE_CACHE_MAX = 200;
 
@@ -822,7 +822,7 @@ function toHostQQPath(p) {
 }
 
 /** 被引用的那条是图片时，光写「[图]」等于什么都没说——模型只能说「我看不到」。
- * 这里把原图从 NapCat 的缓存目录找出来，走同一条描述缓存，有内容就把内容带上。 */
+ * 这里把原图从 SnowLuma 的缓存目录找出来，走同一条描述缓存，有内容就把内容带上。 */
 async function describeQuotedImage(d) {
   const fname = d?.file;
   if (!fname) return '';
@@ -956,7 +956,7 @@ const TEMP_SCAN_MS = 12000;
 /**
  * 收在线文件/图片时，协议端会先把文件落到自己的 temp 目录，宿主机上是另一个前缀。
  * 这里按名字去捞最新的那个。2026-10-28 换 SnowLuma 后它的落点是
- * /app/.config/QQ/nt_qq_<hash>/nt_temp，老的 NapCat/temp 也一并留着扫。
+ * /app/.config/QQ/nt_qq_<hash>/nt_temp，老的 SnowLuma/temp 也一并留着扫。
  */
 function tempDirCandidates() {
   const out = [];
@@ -1062,7 +1062,7 @@ async function fetchFileViaUrlApi(spec, meta) {
     const got = await downloadFile(url, filesDir, spec.name);
     if (got) return got;
   }
-  // 老 NapCat 上 get_file 还管用，留着当最后一道
+  // 老 SnowLuma 上 get_file 还管用，留着当最后一道
   try {
     const info = await ob.call('get_file', { file_id: id }, 15000);
     const host = toHostQQPath(info?.file || info?.url || '');
@@ -1073,12 +1073,12 @@ async function fetchFileViaUrlApi(spec, meta) {
 
 /** 把一个 file 段变成「本地已有这个文件」；哪条路都走不通就返回 null。 */
 async function materializeFile(spec, meta) {
-  // 1) 段里直接带 url（NapCat 的 PacketApi 通了就给），最省事
+  // 1) 段里直接带 url（SnowLuma 的 PacketApi 通了就给），最省事
   if (spec.url) {
     const got = await downloadFile(spec.url, filesDir, spec.name);
     if (got) return got;
   }
-  // 2) 在线文件：让 NapCat 自己下
+  // 2) 在线文件：让 SnowLuma 自己下
   if (spec.msgId && spec.elementId) {
     const hit = await receiveOnlineFile(meta, spec);
     if (hit) {
@@ -1150,7 +1150,7 @@ function extractMedia(message) {
 }
 
 /** 把媒体原始段写进素材库，供之后原样转发。
- * 图片顺手落本地（NapCat 的 url 会过期），记 local 路径。 */
+ * 图片顺手落本地（SnowLuma 的 url 会过期），记 local 路径。 */
 async function saveMedia(key, uid, name, mediaList) {
   if (!mediaList.length) return;
   const file = path.join(stashDir, `${safeFileName(key)}.jsonl`);
@@ -1347,7 +1347,7 @@ async function materializeSeg(rec) {
   }
   if (!file) {
     note('warn', `[素材] 物化失败，三级来源都不可用（file=${rec?.file || '-'} local=${rec?.local || '-'} url=${seg.data?.url ? 'y' : 'n'}）`);
-    return seg; // 回退：让 NapCat 自己试
+    return seg; // 回退：让 SnowLuma 自己试
   }
   try {
     const b64 = fs.readFileSync(file).toString('base64');
@@ -2704,7 +2704,7 @@ async function runWorkItem(session, batch, rawLine, { who, canActOnMe, overFavor
     '- 失败就说哪一步没成、卡在哪，一句话说完，不要复述你的探索过程。',
     '- 不要角色扮演，不要用撒娇或卖萌的语气。',
     '',
-    '需要发语音 / 表情 / 说说时，调桥的本地接口，不要自己拼 NapCat：',
+    '需要发语音 / 表情 / 说说时，调桥的本地接口，不要自己拼 SnowLuma：',
     '  POST http://127.0.0.1:3899/api/action',
     '  body 三种：{"op":"voice","text":"要说的话"} / {"op":"sticker","ref":"12"} / {"op":"qzone"}',
     '  sticker 的 ref：本会话素材用序号（如 "12"），共享图库用 S 开头（如 "S3"）。',
@@ -3685,7 +3685,7 @@ async function handleBatch(session, batch) {
   const bareAtHint = Boolean(session.bareAtAt && Date.now() - session.bareAtAt < 10_000);
   if (bareAtHint) session.bareAtAt = 0;
 
-  // 群管理要看机器人是不是管理员；只在号主说话时查，别为每句群聊都戳一次 NapCat
+  // 群管理要看机器人是不是管理员；只在号主说话时查，别为每句群聊都戳一次 SnowLuma
   let botRole = 'member';
   if (session.kind === 'group' && isOwner && adminConfig(cfg).enabled) {
     botRole = await getBotRole(ob, cfg, session.id, state.self?.user_id).catch(() => 'member');
@@ -4500,7 +4500,7 @@ function commandText(cfg, m) {
 
 ob.on('event', (ev) => {
   if (ev.post_type === 'meta_event') return;
-  // 戳一戳（2026-10-28）：NapCat 走 notice / notify / sub_type=poke，
+  // 戳一戳（2026-10-28）：SnowLuma 走 notice / notify / sub_type=poke，
   // target_id 是被戳的人。只有戳到自己才处理，戳别人的不管。
   if (ev.post_type === 'notice') {
     void handlePokeNotice(ev).catch((e) => note('warn', `戳一戳事件处理失败：${e.message}`));
@@ -4976,7 +4976,7 @@ const control = startControl(cfg, {
     post: (opts = {}) => maybePostDaily({ cfg, runner, ob, note, ...opts }),
   },
   // 给 DSH 用的：# 命令里要用到桥内能力（发语音/发表情/发说说）时，
-  // DSH 通过 POST /api/action 调这里，不用自己猜 NapCat 的接口。
+  // DSH 通过 POST /api/action 调这里，不用自己猜 SnowLuma 的接口。
   action: async (body = {}) => {
     const op = String(body.op || '');
     const ownerUid = (cfg.raw.persona?.ownerUids || [])[0];

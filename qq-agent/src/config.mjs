@@ -6,6 +6,8 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 const DEFAULTS = {
   gate: { enabled: true },
+  // 键名沿用历史叫法（当年协议端是 NapCat），现在跑的是 SnowLuma；两者都是 OneBot v11，
+  // 改键名要动 cfg.raw.napcat 的全部引用，没收益，就别动。
   napcat: { wsUrl: 'ws://127.0.0.1:3001', token: '' },
   lists: { privateAllow: [], groupAllow: [] },
   trusted: [],
