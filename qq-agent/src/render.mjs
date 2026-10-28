@@ -1,3 +1,4 @@
+﻿import { stripCallBeforeHash } from './util.mjs';
 /**
  * OneBot 消息段 → 模型能读的文本。
  *
@@ -168,7 +169,8 @@ export function stripAtLabels(text) {
  * 只认「@了你」或者「谁都没 @」的消息——别人 @号主、@群友 时发的 #好感度 不算叫它。
  */
 export function isFavorCommand(text) {
-  const t = String(text ?? '');
+  //群里「溧月 #好感度」这种，先把行首那声称呼剥掉再认指令（2026-10-28）
+ const t = stripCallBeforeHash(String(text ?? ''), ['溧月']);
   if (!t.includes('@你') && /@(?:号主|群友|全体成员)/.test(t)) return false;
   return /^[#＃]\s*好感度$/.test(stripAtLabels(t));
 }

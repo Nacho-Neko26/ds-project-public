@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { stripAtLabels } from './render.mjs';
-import { log } from './util.mjs';
+import { log, stripCallBeforeHash } from './util.mjs';
 
 export const EMOTION_DEFAULTS = {
   enabled: true,
@@ -424,7 +424,8 @@ export function renderEmotionBlock(s) {
 /* ---------- #心情 ---------- */
 
 export function parseMoodCommand(text) {
-  const t = String(text ?? '');
+  // 群里「溧月 #心情」这种，先把行首那声称呼剥掉再认指令（2026-10-28）
+ const t = stripCallBeforeHash(String(text ?? ''), ['溧月']);
   if (!t.includes('@你') && /@(?:号主|群友|全体成员)/.test(t)) return false;
   return /^[#＃]\s*心情$/.test(stripAtLabels(t));
 }

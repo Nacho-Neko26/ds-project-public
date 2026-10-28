@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+﻿import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { loadConfig } from './config.mjs';
@@ -81,7 +81,8 @@ import {
 } from './favor.mjs';
 import {
   log, chunkText, sleep, appendJsonl, readJsonl, ensureDir, hhmm, safeFileName, splitMessages,
-  splitOverlongMessage, autoSplitLong, nameHit,
+  splitOverlongMessage, autoSplitLong, nameHit, calledByUser, isHashLine, gateHashLines,
+  stripCallBeforeHash,
 } from './util.mjs';
 import { detectSingRequest, detectSingAsk } from './sing-intent.mjs';
 import { recordIdentity, renderIdentityBlock, resolveMentions } from './identity.mjs';
@@ -1504,7 +1505,7 @@ async function sendSelfImage(session) {
   const file = selfImagePath();
   if (!fs.existsSync(file)) throw new Error('形象图还没准备');
   const b64 = fs.readFileSync(file).toString('base64');
-  const seg = { type: 'image', data: { file: `base64://${b64}`, summary: '溟月的样子' } };
+  const seg = { type: 'image', data: { file: `base64://${b64}`, summary: '溧月的样子' } };
   if (session.kind === 'group') await ob.sendGroup(session.id, [seg]);
   else await ob.sendPrivate(session.id, [seg]);
   note('info', `[${session.key}] 发自己的形象图`);
@@ -1644,7 +1645,7 @@ async function applyStickerFeedback(session, collects, remarks, feedbacks) {
     const row = {
       t: new Date().toISOString(),
       uid: 0,
-      name: '溟月收的',
+      name: '溧月收的',
       seg: { type: 'image', data: { summary } },
       file: `collected/${name}`,
       local: to,
@@ -2810,6 +2811,28 @@ async function handleBatch(session, batch) {
     return;
   }
 
+  // 0.5 群里的 # 指令必须叫她（2026-10-28 用户定，m00122）：@溧月 或正文含「溧月」。
+  // 没叫到的那种，当没看见——不执行、不吭声、也不进历史。私聊不设这道门。
+  // 例外是桥自己的开关（#关机 #接管 #回来 #群聊）：那几个是主人拿来按电源的，
+  // 卡在「先叫名字」上头会连叫醒的路都堵死，所以照旧放行。
+  if (session.kind === 'group') {
+    const bridgeSwitch = /^\s*[#＃]\s*(关机|接管|回来|群聊)/;
+    const kept = gateHashLines(batch, {
+      kind: 'group',
+      isCalled: (m) => bridgeSwitch.test(String(m.text || '')) || calledByName(cfg, m),
+    });
+    if (!kept.length) {
+      // 一条都没叫她的 # 指令：整批当没看见，连模型都不叫——不烧 token、不吭声、不留痕。
+      state.stats.skipped++;
+      note('info', `[${session.key}] 群里 # 指令没叫她，整批忽略 ${batch.length} 条`);
+      return;
+    }
+    if (kept.length !== batch.length) {
+      note('info', `[${session.key}] 群里 # 指令没叫她，忽略 ${batch.length - kept.length} 条`);
+      batch = kept;
+    }
+  }
+
   // 1. 先把收到的话写进历史（不管后面回不回）
   // 说话人用【】框住：句子里的「我」是说话人自己，不是她
   const newLines = [];
@@ -2852,7 +2875,10 @@ async function handleBatch(session, batch) {
   }
 
   // 1.7 好感度查询：#好感度（任何人在群里 @ 它、或私聊发都行，不走模型）
-  const favorMsg = batch.find((m) => isFavorCommand(m.text));
+  // 2026-10-28 用户定（m00122）：群里发 # 指令必须先叫她（@溧月 或正文含「溧月」），
+  // 没叫到的一句都不办。这里按「这条消息自己有没有叫她」判，不继承批次里别人的 @。
+  const favorMsg = batch.find((m) => isFavorCommand(commandText(cfg, m))
+    && (session.kind === 'private' || calledByName(cfg, m)));
   if (favorMsg) {
     session.forceReplyUntil = 0;
     const who = favorMsg;
@@ -2884,7 +2910,8 @@ async function handleBatch(session, batch) {
 
   // 1.75 情绪查询：#心情（任何人在群里 @ 它、或私聊发都行，不走模型）
   // 内部指标（余温/饱和率/话痨值）一律不外露（§15.15）。
-  const moodMsg = batch.find((m) => parseMoodCommand(m.text));
+  const moodMsg = batch.find((m) => parseMoodCommand(commandText(cfg, m))
+    && (session.kind === 'private' || calledByName(cfg, m)));
   if (moodMsg) {
     session.forceReplyUntil = 0;
     const profiles = session.profiles ?? (session.profiles = loadProfiles(cfg.agentCwd, session.key));
@@ -2923,7 +2950,12 @@ async function handleBatch(session, batch) {
   if (!isOwnerHere) {
     try { isOwnerHere = cfg.trusted.has(Number(last.uid)); } catch { isOwnerHere = false; }
   }
-  const hashLine = batch.map((x) => String(x.text || '')).find((t) => /^\s*[#＃]/.test(t));
+  // 2026-10-28 用户定（m00122）：群里打 # 指令也得先叫她。
+  // 逐条挑「带 # 且这条自己叫了她」的那种；私聊不设这道门。
+  const hashLine = batch
+    .filter((x) => /^\s*[#＃]/.test(commandText(cfg, x)))
+    .filter((x) => session.kind === 'private' || calledByName(cfg, x))
+    .map((x) => commandText(cfg, x))[0];
   // 2026-10-26 用户要求「其实只要叫你唱就行，不用指令」：
   // 没打 # 也认点唱（私聊直接说，群里要先点名），走同一条排队逻辑。
   let singCmd = '';
@@ -2962,7 +2994,13 @@ async function handleBatch(session, batch) {
       }
     }
     if (!singHit) {
-      const said = batch.map((x) => String(x.text || '')).join(' ').trim();
+      // 歌名拆成两条发的情况：只拼「自己叫了她的」那几条。
+      // 2026-10-28 用户定（m00122）：群里没叫她的闲聊不能靠别人那句 @ 沾光被当成点唱。
+      const said = batch
+        .filter((x) => session.kind === 'private' || calledByName(cfg, x))
+        .map((x) => String(x.text || ''))
+        .join(' ')
+        .trim();
       singHit = detectSingRequest(said, { isGroup: session.kind === 'group', atMe: atMeAny });
     }
     // 「我可以点翻唱吗」这种征求许可的：按好感度回（2026-10-28 用户定）
@@ -3736,7 +3774,10 @@ async function handleBatch(session, batch) {
     const boosted = powerBoost(cfg) && powerBoost(cfg) === Number(last.uid);
     const level = boosted ? 4 : levelOf(qualified, isOwner);
     const picked = filterByGate(ctable, level, { isOwner });
-    const batchText = batch.map((m) => m.text || '').join('\n');
+    // 2026-10-28 用户定（m00122）：群里的一般指令（普通命令 / 模糊指令）也得先叫她。
+    // 没叫到的那几条不进匹配文本——否则「要不要唱歌」这种闲聊会被当成命令喂给模型。
+    const gated = session.kind === 'private' ? batch : batch.filter((m) => calledByName(cfg, m));
+    const batchText = gated.map((m) => m.text || '').join('\n');
     const hashCmd = (batchText.match(/^[#＃]\s*([^\s#＃]{1,20})/) || [])[1] || '';
     cmdHints = renderHints({
       ownerRule: renderOwnerRule(isOwner),
@@ -3997,7 +4038,7 @@ async function handleBatch(session, batch) {
   const fb = parseFeedbackDirective(sr.rest);
   await applyStickerFeedback(session, cs.list, sr.list, fb.list);
   const bodyRaw = fb.rest;
-  // 2026-10-27 用户定：以【溟月】身份说的对话内容走短文本规则；引用资料、检索到的长文本、
+  // 2026-10-27 用户定：以【溧月】身份说的对话内容走短文本规则；引用资料、检索到的长文本、
   // 对方点名要模仿的长文句式这类「不是她临场说的话」，在正文最前面单独一行写 __LONG__，
   // 桥就不再按 16 字/40~90 字去断它，整条当作长文发出去。
   // 标记必须落在第一行、而且后面要有正文，光写一个标记不算。
@@ -4452,6 +4493,39 @@ function personaAliasHit(cfg, text) {
   return nameHit(names, text);
 }
 
+/**
+ * 群聊里「这条指令到没到叫她」（2026-10-28 用户定，m00122）。
+ * 一般指令和 # 指令都必须先叫她：真 @ 她，或者正文里出现「溧月」。
+ * 只看单条消息——批次里别人 @ 过她，不代表这条也能算。
+ * 私聊永远算叫到了。
+ */
+function calledByName(cfg, m) {
+  const c = char();
+  const names = Array.isArray(c.groupCallNames) && c.groupCallNames.length
+    ? c.groupCallNames
+    : [c.name];
+  if (calledByUser(names, m)) return true;
+  // 剥掉行首那声称呼之后才露出的 # 指令，也算她听见了（2026-10-28）。
+  // 否则「溧月 #好感度」会被门禁当闲聊放过去、又不被指令层认出来，两头落空。
+  const text = String((m && m.text) || '');
+  if (!/[#＃]/.test(text)) return false;
+  return stripCallBeforeHash(text, names) !== text;
+}
+
+/**
+ * 判 # 指令时用的正文：群里「溧月 #好感度」这种，把行首那声称呼剥掉再看（2026-10-28）。
+ * 私聊、或者不带 # 的普通话说，原样返回。
+ */
+function commandText(cfg, m) {
+ const text = String((m && m.text) || '');
+ if (!/[#＃]/.test(text)) return text;
+ const c = char();
+ const names = Array.isArray(c.groupCallNames) && c.groupCallNames.length
+ ? c.groupCallNames
+ : [c.name];
+ return stripCallBeforeHash(text, names);
+}
+
 ob.on('event', (ev) => {
   if (ev.post_type === 'meta_event') return;
   // 戳一戳（2026-10-28）：NapCat 走 notice / notify / sub_type=poke，
@@ -4534,7 +4608,7 @@ ob.on('event', (ev) => {
 
     // —— 谁的话才进模型（2026-10-28 用户定，改掉了原来的硬门禁）——
     // 判定逻辑抽到 agent.mjs 的 pickGroupMessage()，这里只负责执行：
-    //   ① 被 @ 或叫了「溟月」：进，而且这一轮必须回；
+    //   ① 被 @ 或叫了「溧月」：进，而且这一轮必须回；
     //   ② 叫过之后 wakeWindowMinutes 分钟内（默认 5）：群里普通消息也照喂，让她接着聊；
     //   ③ 其余情况按 reply.groupChance 真掷骰，命中才进来。
     //   以前这个概率只写进 prompt 当摆设，桥侧在下面直接 return 了，所以「不@就不回」。
@@ -4679,7 +4753,7 @@ ob.on('event', (ev) => {
       enqueue(session, {
         uid, name: senderName(ev), text: resolved, time: ev.time ? ev.time * 1000 : Date.now(), messageId: rawId,
         // 2026-10-28 修：这条消息自己有没有点到我，得跟着消息一起进缓冲。
-        // 以前没带，点唱判断读的是 m.atMe（永远 undefined），群里只能靠正文里出现「溟月」；
+        // 以前没带，点唱判断读的是 m.atMe（永远 undefined），群里只能靠正文里出现「溧月」；
         // 主人 @ 我说的「清唱认真的雪」于是被判成闲聊，模型去点原唱/念歌词，一首歌都没唱。
         atMe: mentioned,
       });

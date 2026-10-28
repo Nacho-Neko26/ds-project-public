@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+﻿import fs from 'node:fs';
 import path from 'node:path';
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
@@ -71,7 +71,7 @@ export function nameHit(names, text) {
 
 /**
  * 群聊里「这条消息有没有叫她」（2026-10-28 用户定，m00122）。
- * 一般指令和 # 指令都要先叫她：真 @ 她，或者正文里出现「溟月」。
+ * 一般指令和 # 指令都要先叫她：真 @ 她，或者正文里出现「溧月」。
  * 只看单条——批次里别人 @ 过她，不代表这条也算。
  */
 export function calledByUser(names, m) {
@@ -93,6 +93,20 @@ export function gateHashLines(batch, { kind, isCalled } = {}) {
   const list = Array.isArray(batch) ? batch : [];
   if (kind !== 'group') return list;
   return list.filter((m) => !isHashLine(m) || isCalled(m));
+}
+
+/**
+ * 群里用文字叫她、后面紧跟 # 指令时，把那声称呼剥掉（2026-10-28）。
+ * 「溧月 #好感度」和「@你 #好感度」应该等价：不剥的话行首不是 #，
+ * 指令层认不出来，整句就被当成闲聊喂给模型了。
+ * 只剥「称呼 + 可选标点 + 紧跟着 #」这一种，普通闲聊一个字都不动。
+ */
+export function stripCallBeforeHash(text, names) {
+  const list = (names || []).map((x) => String(x || '').trim()).filter(Boolean);
+  if (!list.length) return String(text ?? '');
+  const esc = list.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const re = new RegExp(`^\\s*(?:${esc})\\s*[，,：:、]?\\s*(?=[#＃])`);
+  return String(text ?? '').replace(re, '');
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
