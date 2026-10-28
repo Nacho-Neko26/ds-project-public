@@ -112,6 +112,7 @@ export class AgentRunner {
     // 所以两个 key 都得带进去：中转 key → RELAY_API_KEY，官方 key → DEEPSEEK_API_KEY。
     this.apiKey = readCredential('DEEPSEEK_API_KEY');
     this.relayKey = readCredential('RELAY_API_KEY') || this.apiKey;
+    this.goKey = readCredential('OPENCODE_GO_API_KEY');
     // 两条路的 overlay patch：谁 active 就挂谁，见 src/model-mode.mjs
     this.modelPatches = {
       relay: path.join(this.patchesDir, 'generated-model-relay.yml'),
@@ -264,6 +265,7 @@ export class AgentRunner {
       NODE_PATH: this.dsh.nodePath,
       DEEPSEEK_API_KEY: this.apiKey,
       RELAY_API_KEY: this.relayKey,
+      OPENCODE_GO_API_KEY: this.goKey,
       // 可信用户：只能改 qq-agent/workspace 里的东西
       // 只联网模式：read-only，最多查查网页
       DSH_PERMISSION_MODE: permissionMode ?? (mode === 'full' ? 'workspace-write' : 'read-only'),
@@ -399,7 +401,8 @@ export class AgentRunner {
       '图片路径：' + visionFile,
     ].filter(Boolean).join('\n');
     this.#writeDescribePatch();
-    return this.run({
+    await acquireDescribe();
+    const __run = this.run({
       prompt,
       withTools: true,
       permissionMode: 'read-only',
@@ -408,7 +411,24 @@ export class AgentRunner {
       modelPatch: false,
       timeoutMs: 20000,
     });
+    __run.finally(releaseDescribe);
+    return __run;
   }
+}
+
+/**
+ * 图片描述排队：describeImage 每次都会 spawn 一个 headless dsh（实测 420~450MB），
+ * 群里连着甩图时会同时起三四个，把 3.5G 的机器吃干净。
+ * 这里串行化：同一时刻只跑一个，其余排队。
+ */
+const __descQ = { busy: false, waiters: [] };
+function acquireDescribe() {
+  if (!__descQ.busy) { __descQ.busy = true; return Promise.resolve(); }
+  return new Promise((r) => __descQ.waiters.push(r));
+}
+function releaseDescribe() {
+  const next = __descQ.waiters.shift();
+  if (next) next(); else __descQ.busy = false;
 }
 
 /**

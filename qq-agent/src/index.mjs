@@ -40,6 +40,7 @@ import { createUpdateCheck } from './updates.mjs';
 import { tick as purposeTick, takePending as purposeTakePending, markSpoken as purposeMarkSpoken, purposeSetMuted } from './purpose.mjs';
 import { readSummary, maybeSummarize } from './summary.mjs';
 import { maybeDigestKnowledge } from './knowledge-digest.mjs';
+import { autoReviewKnowledge } from './kb-review.mjs';
 import { listMemory, readMemory, writeMemory, searchMemory } from './memfiles.mjs';
 import { loadCorpus, pickCorpusSamples, renderCorpusHint } from './corpus.mjs';
 import { renderPlainVoice, renderVoice, renderMoodVoice, renderBailianVoice } from './voice.mjs';
@@ -2715,6 +2716,16 @@ async function handleBatch(session, batch) {
   // 1.6 后台知识整理：聊完一波把梗/称呼/关系写进知识库（不阻塞接话这一步）
   void maybeDigestKnowledge({ cfg, runner, history, chatKey: session.key, note })
     .catch((e) => note('warn', `知识整理任务失败: ${e.message}`));
+
+  // 1.65 知识库自动确认（2026-10-28 用户要求「自动收录无需我审批」）：
+  // 兜住「她上一轮接话时自己 knowledge_write_node 写进去」那些节点，不留在面板等审。
+  // 文件没变就直接返回，几乎零开销。
+  try {
+    const rv = autoReviewKnowledge(cfg);
+    if (rv.cleared > 0) note('info', `[${session.key}] 知识库自动确认 ${rv.cleared} 条`);
+  } catch (e) {
+    note('warn', `知识库自动确认失败: ${e.message}`);
+  }
 
   // 1.7 好感度查询：#好感度（任何人在群里 @ 它、或私聊发都行，不走模型）
   const favorMsg = batch.find((m) => isFavorCommand(m.text));

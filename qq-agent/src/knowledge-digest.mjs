@@ -15,6 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir, readJsonl, safeFileName, hhmm, log } from './util.mjs';
+import { autoReviewKnowledge } from './kb-review.mjs';
 
 export const DEFAULT_DIGEST = {
   enabled: true,
@@ -157,5 +158,16 @@ export async function maybeDigestKnowledge({ cfg, runner, history, chatKey, note
   saveState(cfg, chatKey, st);
 
   note('info', `[${chatKey}] 知识整理完成：${verdict.slice(0, 80)}（本次喂 ${slice.length} 条，累计 dayCount=${st.dayCount}）`);
+
+  // 2026-10-28 用户要求「自动收录无需我审批」：刚写进去的梗立刻算正式条目，不在面板挂待审
+  try {
+    const rv = autoReviewKnowledge(cfg);
+    if (rv.cleared > 0) {
+      note('info', `[${chatKey}] 知识库自动确认 ${rv.cleared} 条（${rv.files.map((f) => f.base).join(',')}）`);
+    }
+  } catch (e) {
+    note('warn', `[${chatKey}] 知识库自动确认失败: ${e.message}`);
+  }
+
   return verdict;
 }
