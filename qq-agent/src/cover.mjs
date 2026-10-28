@@ -107,7 +107,7 @@ export function readVoiceCatalog(cfg) {
 /** 排一个翻唱任务，返回任务 id（桥回话要用）
  *  mode: 'vocal'（人声+伴奏）| 'acappella'（清唱，只出人声）
  *  params: {vocalGain, instGain, backingGain, transpose}（增益是百分比，100=原样） */
-export function enqueueCover(cfg, { song, chat, by = 0, voice = 'keroro', mode = 'vocal', params = null, segment = null, engine = '', redo = false }) {
+export function enqueueCover(cfg, { song, chat, by = 0, voice = 'keroro', mode = 'vocal', params = null, segment = null, engine = '', redo = false, preset = '' }) {
   const p = ensureCoverDirs(cfg);
   const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const clean = {};
@@ -138,6 +138,8 @@ export function enqueueCover(cfg, { song, chat, by = 0, voice = 'keroro', mode =
     // redo=true 时本机执行器不查翻唱库，强制重跑
     redo: !!redo,
     params: clean,
+    // 2026-10-28：在工作台存了好几套预设，命令里写「预设 名字」就照那套跑；不写用默认那套
+    preset: String(preset || '').slice(0, 40),
     segment: seg,
     chat: chat || '', by, at: Date.now(),
   };

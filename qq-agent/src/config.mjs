@@ -15,6 +15,10 @@ const DEFAULTS = {
     splitShortLines: true,
     maxCharsPerMessage: 700,
     quoteReplyInGroup: true,
+    // 鱼群识别（2026-10-28 用户要求）：最近 humanWindow 条里一个真人说话都没有，
+    // 就安静潜水不插话，直到被 @、被叫名字、或者刚被叫过的窗口内。
+    quietWhenNoHuman: true,
+    humanWindow: 30,
     debounceMs: { private: 0, group: 2500 },
     cooldownMs: { private: 0, group: 8000 },
     rateLimit: { perChatPerMinute: 20, globalPerMinute: 60 },

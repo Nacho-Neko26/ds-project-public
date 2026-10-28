@@ -4,6 +4,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { log, ensureDir, stripAnsi } from './util.mjs';
 import { char, defaultNick } from './character.mjs';
+import { isSelfEntry } from './context.mjs';
 import { renderEmotionBlock, renderAngerLine } from './emotion.mjs';
 import { renderExpressionBlock } from './expression.mjs';
 import { tierVoice } from './tiers.mjs';
@@ -250,7 +251,7 @@ export class AgentRunner {
    *   'web'  → 只留 tool-web，能搜网页但碰不到文件/shell（普通群友被 @ 时）
    *   'none' → 不给工具（默认）
    */
-  async run({ prompt, toolMode = 'none', withTools, permissionMode, persona = true, extraPatch = null, modelPatch = true, timeoutMs = 0 }) {
+  async run({ prompt, toolMode = 'none', withTools, permissionMode, persona = true, extraPatch = null, modelPatch = true, timeoutMs = 0, stopOnFinal = false }) {
     if (!this.dsh.script) throw new Error('dsh 入口未找到');
     // 兼容老调用：withTools: true 等价于 toolMode: 'full'
     const mode = withTools === true ? 'full' : (withTools === false ? 'none' : toolMode);
@@ -292,7 +293,7 @@ export class AgentRunner {
       // modelPatch: false 时完全不挂路线 patch —— 图片描述要把模型钉在能吃图的官方模型上，
       // 这里再追加一次路线 patch 会把它覆盖回去（2026-10-28 踩过：patch 写了官方，还是走中转）。
       const args = [...baseArgs(), ...(modelPatch ? ['--patch', this.modelPatches[r]] : [])];
-      const out = await this.#spawn([...args, ...(wantJson ? ['--json'] : []), prompt], env, timeoutMs);
+      const out = await this.#spawn([...args, ...(wantJson ? ['--json'] : []), prompt], env, timeoutMs, { stopOnFinal: opts.stopOnFinal === true });
       return this.#finish(out, wantJson);
     };
 
@@ -342,8 +343,16 @@ export class AgentRunner {
     return /unknown option|Unknown argument|--json/i.test(String(stderr || ''));
   }
 
-  /** 起一次 dsh 子进程，返回 { code, elapsed, stdout, stderr, timedOut } */
-  async #spawn(args, env, budgetMs = 0) {
+  /**
+   * 起一次 dsh 子进程，返回 { code, elapsed, stdout, stderr, timedOut }
+   *
+   * opts.stopOnFinal（2026-10-28 修读图）：
+   * dsh 出完 {"type":"final"} 之后还要空转约 16 秒才退出（实测：final 在 +4.1s，
+   * 进程 close 在 +21s）。桥原来等的是 close，于是 describeImage 的 20 秒预算
+   * 永远不够——stdout 里明明已经有答案，却被判超时、整条读图功能失效。
+   * 打开这个开关后，一看到 final 行就认结果返回，并让子进程自己收尾（SIGTERM）。
+   */
+  async #spawn(args, env, budgetMs = 0, opts = {}) {
     const startedAt = Date.now();
     const child = spawn(this.dsh.node, [this.dsh.script, ...args], {
       cwd: this.cfg.agentCwd,
@@ -354,7 +363,39 @@ export class AgentRunner {
 
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
+    // stopOnFinal：见到 final 事件就收工，不再等进程退出（dsh 收尾还要空转十几秒）
+    let sawFinal = false;
+    let settle;
+    const settled = new Promise((resolve) => { settle = resolve; });
+    const stopChild = () => {
+      try {
+        if (process.platform === 'win32') {
+          spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+        } else {
+          child.kill('SIGKILL');
+        }
+      } catch { /* ignore */ }
+    };
+    let stdoutTail = '';
+    child.stdout.on('data', (d) => {
+      stdout += d.toString('utf8');
+      if (!opts.stopOnFinal || sawFinal) return;
+      stdoutTail += d.toString('utf8');
+      // 只认「行首是 {"type":"final"」的完整行；末尾没换行的残行留着等下一块
+      const lines = stdoutTail.split(/\r?\n/);
+      stdoutTail = lines.pop() ?? '';
+      for (const line of lines) {
+        if (line.trimStart().startsWith('{"type":"final"')) { sawFinal = true; break; }
+      }
+      // final 有时是最后一行、没有收尾换行：残行能整段 JSON.parse 成功就算完整
+      if (!sawFinal && stdoutTail.trimStart().startsWith('{"type":"final"')) {
+        try { JSON.parse(stdoutTail.trim()); sawFinal = true; } catch { /* 还没收全 */ }
+      }
+      if (sawFinal) {
+        stopChild();
+        settle({ code: 0, early: true });
+      }
+    });
     child.stderr.on('data', (d) => {
       stderr += d.toString('utf8');
       if (stderr.length > 200_000) stderr = stderr.slice(-100_000);
@@ -373,16 +414,19 @@ export class AgentRunner {
       } catch { /* ignore */ }
     }, timeoutMs);
 
+    let closed = false;
     const code = await new Promise((resolve) => {
-      child.on('close', resolve);
+      child.on('close', (c) => { closed = true; resolve(c); });
       child.on('error', (e) => {
         stderr += `\n[spawn error] ${e.message}`;
+        closed = true;
         resolve(-1);
       });
+      settled.then((r) => { if (!closed) resolve(r.code); });
     });
     clearTimeout(timer);
 
-    return { code, elapsed: Date.now() - startedAt, stdout, stderr, timedOut };
+    return { code, elapsed: Date.now() - startedAt, stdout, stderr, timedOut, early: sawFinal };
   }
 
   /**
@@ -423,7 +467,10 @@ export class AgentRunner {
       persona: false,
       extraPatch: this.describePatch,
       modelPatch: false,
-      timeoutMs: 20000,
+      // 2026-10-28：dsh 出完 final 还要空转 ~16s 才退出，等 close 会误判超时（读图全废）。
+      // stopOnFinal 见到 final 就返回；预算给到 45s 兜底，正常 5~8s 就回。
+      stopOnFinal: true,
+      timeoutMs: 45000,
     });
     __run.finally(releaseDescribe);
     return __run;
@@ -525,8 +572,35 @@ export function rollGroupChance(cfg, chatKey, boost = false, rnd = Math.random) 
  * @returns {{accept:boolean, reason:''|'called'|'wake'|'roll', pct:number, wakeUntil:number}}
  *          reason：'' = 不进（静默）／'called' 被叫／'wake' 窗口内／'roll' 掷骰中了
  */
+/**
+ * 鱼群识别（2026-10-28 用户要求：「当前三十条消息没有真人时自动安静潜水」）。
+ *
+ * 从最近若干条聊天记录里数「真人说话」的条数。判得很保守，宁可少数：
+ *   - 她自己发的不算（那是我自己在说话，不是群里有人）
+ *   - 空正文、纯占位（[图片] / [表情] / [文件] / [语音转写：] 这类空壳）不算
+ *   - 纯标点、单字附和不算（「！」「嗯」撑不起一场对话）
+ * 剩下的才算「有人在聊」。返回 0 = 这三十条里没一个真人说话。
+ */
+export function countHumanSpeech(rows = []) {
+  let n = 0;
+  for (const row of rows) {
+    if (!row) continue;
+    if (isSelfEntry(row)) continue;
+    const text = String(row.text == null ? '' : row.text).trim();
+    if (!text) continue;
+    // 把「[图片]」这类占位挖掉，挖空了就是只有图没有话
+    const bare = text.replace(/\[[^\]]{0,60}\]/g, '').trim();
+    if (!bare) continue;
+    if (/^[。，、！？…~～.,!?·\-—_*\s]+$/.test(bare)) continue;
+    if (bare.length < 2) continue;
+    n += 1;
+  }
+  return n;
+}
+
 export function pickGroupMessage({
-  cfg, chatKey, mode = 'full', calledNow = false, wakeUntil = 0, now = Date.now(), rnd = Math.random,
+  cfg, chatKey, mode = 'full', calledNow = false, wakeUntil = 0,
+  recentHuman = null, now = Date.now(), rnd = Math.random,
 }) {
   const wakeMs = Math.max(0, Number(cfg?.raw?.reply?.wakeWindowMinutes ?? 5)) * 60_000;
   const nextWake = calledNow && wakeMs > 0 ? now + wakeMs : Number(wakeUntil) || 0;
@@ -534,6 +608,14 @@ export function pickGroupMessage({
   if (calledNow) return { accept: true, reason: 'called', pct: 0, wakeUntil: nextWake };
   if (mode === 'mention') return { accept: false, reason: '', pct: 0, wakeUntil: nextWake };
   if (now < nextWake) return { accept: true, reason: 'wake', pct: 0, wakeUntil: nextWake };
+
+  // ④ 鱼群识别：最近 N 条里一个真人说话都没有 → 安静潜水，连骰子都不掷。
+  //    被 @、被叫名字、或者刚被叫过的窗口内，上面几层已经放走了，照常说话。
+  //    recentHuman 传 null 表示「没算」（读不到记录），那就按老规矩走，不能因为读文件失败把群聊冻住。
+  const quietOn = cfg?.raw?.reply?.quietWhenNoHuman !== false;
+  if (quietOn && recentHuman !== null && Number(recentHuman) === 0) {
+    return { accept: false, reason: 'quiet', pct: 0, wakeUntil: nextWake };
+  }
 
   const roll = rollGroupChance(cfg, chatKey, false, rnd);
   return { accept: roll.hit, reason: roll.hit ? 'roll' : '', pct: roll.pct, wakeUntil: nextWake };

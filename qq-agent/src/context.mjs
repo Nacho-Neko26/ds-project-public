@@ -46,6 +46,16 @@ export class HistoryStore {
     return path.join(this.dir, `${safeFileName(chatKey)}.jsonl`);
   }
 
+  /**
+   * 从落盘文件里取最近 n 条。
+   * 内存窗口（this.maxMessages，默认 14）是给模型看上下文用的，不够鱼群识别用——
+   * 那要看最近 30 条里到底有没有真人说话，所以这里直接读文件。
+   */
+  recentRows(chatKey, n = 30) {
+    const want = Math.max(1, Number(n) || 1);
+    return readJsonl(this.file(chatKey), want).slice(-want);
+  }
+
   load(chatKey) {
     if (!this.cache.has(chatKey)) {
       const rows = readJsonl(this.file(chatKey), this.maxMessages * 4);

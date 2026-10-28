@@ -7,7 +7,7 @@ import { OneBot } from './onebot.mjs';
 import { HistoryStore, speakerLabel } from './context.mjs';
 import { renderSegments, renderForwardMessages, stripAtLabels, isFavorCommand } from './render.mjs';
 import { asksForVoice, extractVoiceDirective } from './voice-intent.mjs';
-import { AgentRunner, buildPrompt, readCredential, pickGroupMessage } from './agent.mjs';
+import { AgentRunner, buildPrompt, readCredential, pickGroupMessage, countHumanSpeech } from './agent.mjs';
 import { startControl } from './control.mjs';
 import { downloadImage } from './media.mjs';
 import {
@@ -33,6 +33,7 @@ import { learnMemories, renderMemory, memoryConfig } from './memory.mjs';
 import { appendMemory, queryMemory, removeMemory, clearMemory } from './memory.mjs';
 import { querySlang, submitSlang, renderSlang } from './slang.mjs';
 import { guardFor, busyLine } from './resource-guard.mjs';
+import { resolvePolicy as resolveImagePolicy, shouldReadImages, createRecentImageRing, buildRecentImagesHint, blindPlaceholder } from './image-policy.mjs';
 import { getBalance, maybeNotifyHungry, balanceConfig, recordBalancePoint, computeSpend, balanceLineFor } from './balance.mjs';
 import { getAmbient, renderAmbient } from './ambient.mjs';
 import { createSelfwake, selfwakeConfig } from './selfwake.mjs';
@@ -599,6 +600,18 @@ __SLANG__ submit 词=意思         学会了新叫法就提报上去，主人�
 /* ---------- 看图：下载 + 描述 ---------- */
 const MAX_IMAGES_PER_MSG = 3;
 
+/* 群图策略（2026-10-28 用户定：「群图不看，只在你私聊我或被 @ 时看图」）。
+ * 决策逻辑和单测都搬到了 src/image-policy.mjs —— 那边能脱离桥跑 `node scripts/test-image-policy.mjs`。
+ * 每张图的描述钉在官方视觉模型上（见 agent.mjs 的 describePatch），实测约 2 分钱一张，
+ * 18:47~19:18 群里 38 张图掉了 0.85 元。所以群里没被 @ 就一张都不描述（图照旧下载入库）；
+ * 被 @ 时把 @ 她那个人最近几分钟发过的几张一并补看。 */
+function imgPolicy() {
+  return resolveImagePolicy(cfg.raw?.images);
+}
+const recentImages = createRecentImageRing(60);
+const rememberRecentImage = (chatKey, entry) => recentImages.remember(chatKey, entry);
+const recentImagesFrom = (chatKey, uid, limit, sinceAt) => recentImages.from(chatKey, uid, limit, sinceAt);
+
 /**
  * 图片描述缓存：同一张图（按内容 hash）只描述一次。
  * 一次 describeImage 要烧掉上万 token（图片 token + 工具往返），
@@ -668,10 +681,50 @@ function wantsSaveText(text) {
     || /(把|将).{0,8}(图|表情).{0,6}(存|偷|收藏|保存)/.test(s);
 }
 
+/**
+ * 被 @ 时补看「@ 她那个人最近发过的图」。
+ * 对方常常先甩几张图、再 @ 一句「你看这个」，那时本轮正文里只有这句话。
+ * 描述走同一张缓存表，同一张图第二次看是免费的。
+ */
+async function callerRecentImagesHint(meta = {}, currentFiles = []) {
+  if (!meta.isGroup || !meta.atMe) return '';
+  const pol = imgPolicy();
+  if (pol.recentPerCaller <= 0) return '';
+  const who = String(meta.name || '对方');
+  try {
+    const since = Date.now() - pol.recentWindowMs;
+    const extra = recentImagesFrom(meta.chatKey, meta.uid, pol.recentPerCaller + currentFiles.length, since)
+      .filter((e) => e.file && !currentFiles.includes(e.file))
+      .slice(-pol.recentPerCaller);
+    const seen = [];
+    for (const e of extra) {
+      const d = await describeCached(e.file, e.summary).catch(() => null);
+      const t = String(d?.text || '').replace(/\s+/g, ' ').trim();
+      if (t) seen.push(t);
+    }
+    if (!seen.length) return '';
+    note('info', `[看图] 被 @ 了，补看 ${who} 最近 ${seen.length} 张`);
+    return buildRecentImagesHint(who, seen);
+  } catch (e) {
+    note('warn', `[看图] 补最近几张失败：${e.message}`);
+    return '';
+  }
+}
+
 async function resolveImages(text, images, trusted, meta = {}) {
-  if (!images.length) return text;
+  if (!images.length) {
+    // 没带图也可能被 @ 了（「你看刚才那个」），所以这条捷径也要补一次
+    const only = await callerRecentImagesHint(meta, []);
+    return only ? `${only}\n${text}` : text;
+  }
   let out = text;
   const head = images.slice(0, MAX_IMAGES_PER_MSG);
+  const pol = imgPolicy();
+  const isGroup = !!meta.isGroup;
+  // 群里没被叫 → 一律不描述；私聊、或被 @ 了 → 照常看（判据在 image-policy.mjs，有单测）
+  const blind = !shouldReadImages(pol, meta);
+  const who = String(meta.name || '对方');
+  const currentFiles = [];
 
   await Promise.all(head.map(async (img, i) => {
     const key = img.kind === 'mface' ? 'MFACE' : 'IMG';
@@ -685,11 +738,24 @@ async function resolveImages(text, images, trusted, meta = {}) {
       return;
     }
     const tag = img.kind === 'mface' ? '表情包' : '图片';
+    currentFiles.push(file);
+    // 群里发过的图都记一笔，等她被 @ 的时候回头一起看（记录不花钱，描述才花钱）
+    if (isGroup) {
+      rememberRecentImage(meta.chatKey, { uid: meta.uid, name: who, file, summary: img.summary, at: Date.now() });
+    }
 
     // §16.2 偷图入库（只群聊；memeHub.enabled=false 时这里什么都不做）
     if (meta.isGroup) {
       try { ingestImage({ cfg, file, meta, now: Date.now() }); }
       catch (e) { note('warn', `[memeHub] 入库失败：${e.message}`); }
+    }
+
+    // 群里的图、又没叫她：看一眼都别想（视觉模型每次都烧钱），
+    // 但也不能让她凭空编 —— 给一句实话，让她照这个反应。
+    if (blind) {
+      note('debug', `[看图] 群图跳过：${meta.chatKey} ${who}`);
+      out = out.replace(`[[${key}:${i}]]`, blindPlaceholder(who, img.kind === 'mface'));
+      return;
     }
 
     // 动图拆帧：.gif/.webp 先探测是否多帧，是动图就抽帧拼成网格图；失败退回原图逻辑
@@ -741,6 +807,11 @@ async function resolveImages(text, images, trusted, meta = {}) {
     }
     out = out.replace(`[[${key}:${i}]]`, `[对方发了一个${tag}，没看清里面是什么（别编，也别问他图里写了啥）]`);
   }));
+
+  // 被 @ 时：把 @ 她那个人最近发的图也一并看了（用户 2026-10-28 要求「被@时看@你的对象发送的最近三张图片」）。
+  // 常见场景是对方先甩几张图、再 @ 一句「你看这个」——那时候正文里只有这句话，图全在上一两条里。
+  const hint = await callerRecentImagesHint(meta, currentFiles);
+  if (hint) out = `${hint}\n${out}`;
 
   // 超出上限的图：统一降级
   for (let i = MAX_IMAGES_PER_MSG; i < images.length; i++) {
@@ -3145,7 +3216,7 @@ async function handleBatch(session, batch) {
         const song = parsed.song;
         const need = SING_FAVOR();
         if (!song) {
-          await sendText(session, `用法：#${word} 歌名 [音色 浅夏] [人声80 伴奏40 和声60 升调2]（增益按百分比，100=原样；音色写中文名）`, null);
+          await sendText(session, `用法：#${word} 歌名 [音色 浅夏] [预设 轻柔版] [人声80 伴奏40 和声60 升调2]（百分比相对默认那档，100=默认；音色写中文名）`, null);
           return;
         }
         if (!canActOnMe && fx.favor < need) {
@@ -3177,6 +3248,7 @@ async function handleBatch(session, batch) {
           segment: segment || undefined,
           // 用户说「重唱/重新唱」时强制重跑，不查翻唱库
           redo: !!parsed.redo,
+          preset: parsed.preset || '',
           params: {
             vocalGain: parsed.vocalGain,
             instGain: parsed.instGain,
@@ -4467,8 +4539,19 @@ ob.on('event', (ev) => {
     //   ③ 其余情况按 reply.groupChance 真掷骰，命中才进来。
     //   以前这个概率只写进 prompt 当摆设，桥侧在下面直接 return 了，所以「不@就不回」。
     const calledNow = mentioned || personaNameHit;
+    // 鱼群识别（2026-10-28 用户要求）：先看最近 humanWindow 条里有没有真人说话。
+    // 算不出来（读文件失败）就传 null，退回「照老规矩掷骰」，别把整个群冻住。
+    let recentHuman = null;
+    if (cfg.raw.reply?.quietWhenNoHuman !== false) {
+      try {
+        const win = Math.max(1, Number(cfg.raw.reply?.humanWindow ?? 30));
+        recentHuman = countHumanSpeech(history.recentRows(key, win));
+      } catch (e) {
+        note('warn', `[group:${gid}] 鱼群识别读记录失败（${e.message}），按老规矩掷骰`);
+      }
+    }
     const pick = pickGroupMessage({
-      cfg, chatKey: key, mode, calledNow, wakeUntil: session.wakeUntil || 0,
+      cfg, chatKey: key, mode, calledNow, wakeUntil: session.wakeUntil || 0, recentHuman,
     });
     session.wakeUntil = pick.wakeUntil;
     // accept=false 就是静默；reason 说明这一轮为什么进模型：called／wake／roll
@@ -4486,7 +4569,11 @@ ob.on('event', (ev) => {
     if (!pick.accept) {
       state.stats.ignored++;
       keepRecent();
-      note('debug', `[group:${gid}] 没被叫、掷骰没中（${pick.pct}%），静默：${String(text).slice(0, 20)}`);
+      if (pick.reason === 'quiet') {
+        note('debug', `[group:${gid}] 最近 ${cfg.raw.reply?.humanWindow ?? 30} 条没真人说话，安静潜水：${String(text).slice(0, 20)}`);
+      } else {
+        note('debug', `[group:${gid}] 没被叫、掷骰没中（${pick.pct}%），静默：${String(text).slice(0, 20)}`);
+      }
       return;
     }
     if (pick.reason === 'wake') {
@@ -4691,7 +4778,8 @@ function pickLine(lines) {
   return list[Math.floor(Math.random() * list.length)];
 }
 
-/** 解析「#翻唱 歌名 人声80 伴奏40 和声60 升调2」里的参数；增益是百分比（100=原样） */
+/** 解析「#翻唱 歌名 预设 轻柔版 人声80 伴奏40 和声60 升调2」里的参数；
+ *  增益是百分比、相对默认那档（100 = 默认：人声 1.8 / 伴奏 0.1125 / 和声 0.08）；预设 名字 见工作台 */
 function parseCoverParams(text) {
   let rest = String(text || '');
   const pick = (names) => {
@@ -4723,6 +4811,15 @@ function parseCoverParams(text) {
     rest = rest.replace(mv[0], ' ');
   }
 
+  // 预设：预设 轻柔版 → 用工作台里那套（不写就用标了「QQ默认」的那套）。
+  // 注意不能用上面的 pick()：那个只认数字，预设名是文字。
+  let presetName = null;
+  const mp = rest.match(/预设\s*[:：=]?\s*([^\s，,、]{1,30})/u);
+  if (mp) {
+    presetName = mp[1].trim();
+    rest = rest.replace(mp[0], ' ');
+  }
+
   // 片段：高潮/副歌/一段 → 自动挑副歌；完整/整首/全曲 → 整首；默认副歌那段
   let segment = null;
   if (/完整|整首|全曲|整段|整首歌/.test(rest)) {
@@ -4749,7 +4846,7 @@ function parseCoverParams(text) {
     .replace(/^[《「【（(]+/, '')
     .replace(/[》」】）)]+$/, '')
     .trim();
-  return { song, vocalGain, instGain, backingGain, transpose, indexRate, voice, segment, redo };
+  return { song, vocalGain, instGain, backingGain, transpose, indexRate, voice, segment, redo, preset: presetName };
 }
 
 // 翻唱回传：本机（有显卡那台）跑完把 mp3 放 data/cover/done，这里负责发给会话
