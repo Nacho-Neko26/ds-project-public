@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { loadConfig } from './config.mjs';
 import { initCharacter, char, charName, selfRef, defaultNick, allNames, escapeRe } from './character.mjs';
 import { OneBot } from './onebot.mjs';
@@ -5105,7 +5106,47 @@ const control = startControl(cfg, {
         return { error: String(e.message || e) };
       }
     }
-    return { error: `不认识的 op：${op}（可用 voice / sticker / qzone / text / file）` };
+    if (op === 'record') {
+      // 把一段现成音频当语音条发出去（不是 TTS）。path 只认工作区 / 数据目录 / 语音目录。
+      const fp = String(body.path || '').trim();
+      if (!fp) return { error: 'path 不能为空' };
+      const v = voiceCfg();
+      const voiceDir = v.dir || '/root/snowluma/data/voice';
+      const containerDir = v.containerDir || '/app/data/voice';
+      const allow = [cfg.agentCwd, voiceDir, '/root/qq-agent/data']
+        .filter(Boolean).map((d) => path.resolve(String(d)));
+      const abs = path.resolve(fp);
+      if (!allow.some((d) => abs === d || abs.startsWith(d + path.sep))) {
+        return { error: `path 只认 ${allow.join(' / ')} 底下的文件` };
+      }
+      if (!fs.existsSync(abs)) return { error: '文件不存在：' + abs };
+      fs.mkdirSync(voiceDir, { recursive: true });
+      const outName = `v-msg-${Date.now()}.mp3`;
+      const outAbs = path.join(voiceDir, outName);
+      const ff = v.ffmpeg || cfg.raw?.asr?.ffmpeg || 'ffmpeg';
+      try {
+        execFileSync(ff, ['-y', '-v', 'error', '-i', abs, '-ac', '1', '-ar', '44100',
+          '-b:a', '96k', outAbs], { timeout: 120000 });
+      } catch (e) {
+        return { error: '转码失败：' + String((e && e.message) || e) };
+      }
+      const seg = { type: 'record', data: { file: `${containerDir}/${outName}` } };
+      try {
+        const m = /^(private|group):(\d+)$/.exec(chat);
+        if (!m) return { error: 'chat 要写成 private:QQ号 或 group:群号' };
+        if (m[1] === 'group') await ob.sendGroup(Number(m[2]), [seg]);
+        else await ob.sendPrivate(Number(m[2]), [seg]);
+      } catch (e) {
+        return { error: '发送失败：' + String((e && e.message) || e) };
+      }
+      note('info', `[action] op=record ${outName} → ${chat}`);
+      try {
+        const files = fs.readdirSync(voiceDir).filter((f) => f.startsWith('v-')).sort();
+        for (const f of files.slice(0, Math.max(0, files.length - 40))) fs.unlinkSync(path.join(voiceDir, f));
+      } catch { /* ignore */ }
+      return { ok: true, op: 'record', chat, name: outName };
+    }
+    return { error: `不认识的 op：${op}（可用 voice / sticker / qzone / text / file / record）` };
   },
   simulate: (body = {}) => {
     // 调试用：直接把一个 OneBot 事件塞进事件总线，用来测「空 @」「只有图片」这类
