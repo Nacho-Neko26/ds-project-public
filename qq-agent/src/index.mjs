@@ -33,7 +33,7 @@ import { learnMemories, renderMemory, memoryConfig } from './memory.mjs';
 import { appendMemory, queryMemory, removeMemory, clearMemory } from './memory.mjs';
 import { querySlang, submitSlang, renderSlang } from './slang.mjs';
 import { guardFor, busyLine } from './resource-guard.mjs';
-import { resolvePolicy as resolveImagePolicy, shouldReadImages, createRecentImageRing, buildRecentImagesHint, blindPlaceholder } from './image-policy.mjs';
+import { resolvePolicy as resolveImagePolicy, shouldReadImages, shouldLookRecent, createRecentImageRing, buildRecentImagesHint, blindPlaceholder } from './image-policy.mjs';
 import { getBalance, maybeNotifyHungry, balanceConfig, recordBalancePoint, computeSpend, balanceLineFor } from './balance.mjs';
 import { getAmbient, renderAmbient } from './ambient.mjs';
 import { createSelfwake, selfwakeConfig } from './selfwake.mjs';
@@ -72,6 +72,7 @@ import {
   updateAnger, loadProfiles, saveProfiles, angerTarget, callName, touchIntimacy, sootheHint, ANGER_LEVELS,
   analyzeBatch, setGlobalNick,
 } from './anger.mjs';
+import { Semaphore } from './semaphore.mjs';
 import {
   FAVOR, ensureFavor, rollDay, applyFavor, applyPersuade, settleDailyChat, settleHourlyChat,
   tierOf, tierText, beijingNow, qualifiedFavor, tierOfPerson, BOUNDARY,
@@ -194,26 +195,11 @@ function note(level, msg, extra) {
 }
 
 /* ---------- 并发闸门 ---------- */
-class Semaphore {
-  constructor(n) { this.n = Math.max(1, n); this.queue = []; }
-  get used() { return this.n - this.queue.length - (this.active ?? 0); }
-  async acquire(opts = {}) {
-    // critical = 文本回复：不排队，直接占一个超额槽（2026-10-28 用户要求「先保文本回复」）。
-    // 后台任务可能把 2 个槽都占着，主回复再排到队伍后面就是「人说话没人应」。
-    if (opts.critical) { this.active = (this.active ?? 0) + 1; return; }
-    if ((this.active ?? 0) < this.n) { this.active = (this.active ?? 0) + 1; return; }
-    await new Promise((r) => this.queue.push(r));
-    this.active = (this.active ?? 0) + 1;
-  }
-  release() {
-    this.active = Math.max(0, (this.active ?? 0) - 1);
-    // 还有超额（critical）在跑就别再放队列里的，等降回上限再说
-    if ((this.active ?? 0) >= this.n) return;
-    const next = this.queue.shift();
-    if (next) next();
-  }
-}
-let sem = new Semaphore(cfg.raw.agent.maxConcurrent);
+let sem = new Semaphore(cfg.raw.agent.maxConcurrent, {
+  extra: cfg.raw.agent.criticalExtra,
+  waitMs: cfg.raw.agent.criticalWaitMs,
+  onWarn: (msg) => note('warn', msg),
+});
 
 /* ---------- 业务对象 ---------- */
 const ob = new OneBot(cfg.raw.napcat);
@@ -661,29 +647,79 @@ function wantsSaveText(text) {
 }
 
 /**
- * 被 @ 时补看「@ 她那个人最近发过的图」。
- * 对方常常先甩几张图、再 @ 一句「你看这个」，那时本轮正文里只有这句话。
- * 描述走同一张缓存表，同一张图第二次看是免费的。
+ * 触发回话时补看「刚才跟你说话那个人最近发过的图 / 表情包」。
+ *
+ * 2026-10-29 用户要求原话：「触发回话后自动看最近的回话对象发的表情和图片」。
+ * 场景：对方先甩几张图或几个表情包、再 @ 一句「你看这个」，那时候本轮正文里只有这句话，
+ * 图全在前面一两条里。所以不管是私聊还是群里被 @，都回头把这个人最近的几张捞出来看。
+ *
+ * 便宜的地方：
+ * - 描述走 describeCached，同一张图第二次看是免费的（缓存键就是文件路径）；
+ * - 表情包没有可下载的图时只用手上那句摘要，一次也不花钱；
+ * - 已经在这轮提示过的图记一笔，3 分钟内不重复提示（不然她会对着同一张图反复做反应）。
  */
-async function callerRecentImagesHint(meta = {}, currentFiles = []) {
-  if (!meta.isGroup || !meta.atMe) return '';
+const RECENT_HINT_DEDUPE_MS = 3 * 60_000;
+const recentHinted = new Map(); // chatKey → Map(图片键 → 时间戳)
+
+function hintKeyOf(e) {
+  return e.file ? `f:${e.file}` : `s:${String(e.summary || '')}`;
+}
+
+function hintedRecently(chatKey, key) {
+  const m = recentHinted.get(chatKey);
+  const ts = m?.get(key);
+  return !!ts && Date.now() - ts < RECENT_HINT_DEDUPE_MS;
+}
+
+function markHinted(chatKey, keys) {
+  if (!chatKey || !keys?.length) return;
+  let m = recentHinted.get(chatKey);
+  if (!m) { m = new Map(); recentHinted.set(chatKey, m); }
+  const now = Date.now();
+  for (const k of keys) m.set(k, now);
+  for (const [k, ts] of m) if (now - ts > RECENT_HINT_DEDUPE_MS) m.delete(k);
+  if (recentHinted.size > 200) {
+    for (const [ck, map] of recentHinted) {
+      if (!map.size) recentHinted.delete(ck);
+    }
+  }
+}
+
+async function callerRecentImagesHint(meta = {}, currentFiles = [], turnStart = 0) {
   const pol = imgPolicy();
+  if (!shouldLookRecent(pol, meta)) return '';
   if (pol.recentPerCaller <= 0) return '';
   const who = String(meta.name || '对方');
+  const chatKey = meta.chatKey || '';
   try {
     const since = Date.now() - pol.recentWindowMs;
-    const extra = recentImagesFrom(meta.chatKey, meta.uid, pol.recentPerCaller + currentFiles.length, since)
-      .filter((e) => e.file && !currentFiles.includes(e.file))
+    const budget = pol.recentPerCaller + currentFiles.length;
+    const cands = recentImagesFrom(chatKey, meta.uid, budget, since)
+      .filter((e) => !e.file || !currentFiles.includes(e.file))
+      // 这一轮自己带的那几张已经单独处理了，别在这里再当成「最近发的」重复一遍
+      .filter((e) => !turnStart || Number(e.at || 0) < turnStart)
+      .filter((e) => !hintedRecently(chatKey, hintKeyOf(e)))
       .slice(-pol.recentPerCaller);
     const seen = [];
-    for (const e of extra) {
-      const d = await describeCached(e.file, e.summary).catch(() => null);
-      const t = String(d?.text || '').replace(/\s+/g, ' ').trim();
-      if (t) seen.push(t);
+    const keys = [];
+    for (const e of cands) {
+      let t = '';
+      if (e.file) {
+        const d = await describeCached(e.file, e.summary).catch(() => null);
+        t = String(d?.text || '');
+      } else {
+        // 表情包没有可下载的图：用她本来就能看见的那句摘要
+        t = String(e.summary || '');
+      }
+      t = t.replace(/\s+/g, ' ').trim();
+      if (!t) continue;
+      keys.push(hintKeyOf(e));
+      seen.push(t);
     }
     if (!seen.length) return '';
-    note('info', `[看图] 被 @ 了，补看 ${who} 最近 ${seen.length} 张`);
-    return buildRecentImagesHint(who, seen);
+    markHinted(chatKey, keys);
+    note('info', `[看图] 触发回话，补看 ${who} 最近 ${seen.length} 张（图/表情）`);
+    return buildRecentImagesHint(who, seen, { isGroup: !!meta.isGroup });
   } catch (e) {
     note('warn', `[看图] 补最近几张失败：${e.message}`);
     return '';
@@ -691,6 +727,7 @@ async function callerRecentImagesHint(meta = {}, currentFiles = []) {
 }
 
 async function resolveImages(text, images, trusted, meta = {}) {
+  const turnStart = Date.now();
   if (!images.length) {
     // 没带图也可能被 @ 了（「你看刚才那个」），所以这条捷径也要补一次
     const only = await callerRecentImagesHint(meta, []);
@@ -704,12 +741,23 @@ async function resolveImages(text, images, trusted, meta = {}) {
   const blind = !shouldReadImages(pol, meta);
   const who = String(meta.name || '对方');
   const currentFiles = [];
+  const seenFiles = [];
 
   await Promise.all(head.map(async (img, i) => {
     const key = img.kind === 'mface' ? 'MFACE' : 'IMG';
     const file = img.url ? await downloadImage(img.url, incomingDir) : null;
     if (!file) {
-      // 下载失败也别喂「你看不到」——给个中性标签，让它打哈哈过去
+      // 表情包常常只有一句标签、没有能下载的图：标签本身就是信息，直接给她看，不花钱。
+      // 顺手记一笔，回头「触发回话补看」时还能用上。
+      const raw = String(img.summary || '').replace(/\s+/g, ' ').trim();
+      const label = (raw.match(/^\[表情[:：]?\s*(.+?)\]$/) || [])[1] || raw;
+      if (label) {
+        rememberRecentImage(meta.chatKey, { uid: meta.uid, name: who, summary: label, at: Date.now() });
+        out = out.replace(`[[${key}:${i}]]`,
+          img.kind === 'mface' ? `[对方发了个表情包：${label}]` : `[对方发了张图：${label}]`);
+        return;
+      }
+      // 连标签都没有：给个中性标签，让它打哈哈过去
       const fallback = img.kind === 'mface'
         ? '[对方发了个表情包]'
         : '[对方发了张图]';
@@ -736,6 +784,9 @@ async function resolveImages(text, images, trusted, meta = {}) {
       out = out.replace(`[[${key}:${i}]]`, blindPlaceholder(who, img.kind === 'mface'));
       return;
     }
+    // 真看过的图才记进「这轮已经看过」，下一轮不再当「最近发的」重复提示；
+    // 群图跳过的那些没看过，等被叫到的时候还得补看。
+    seenFiles.push(file);
 
     // 动图拆帧：.gif/.webp 先探测是否多帧，是动图就抽帧拼成网格图；失败退回原图逻辑
     // 帧数可配：config.animation.frames（默认 16 = 4×4），长一点的动图也能看全
@@ -787,10 +838,13 @@ async function resolveImages(text, images, trusted, meta = {}) {
     out = out.replace(`[[${key}:${i}]]`, `[对方发了一个${tag}，没看清里面是什么（别编，也别问他图里写了啥）]`);
   }));
 
-  // 被 @ 时：把 @ 她那个人最近发的图也一并看了（用户 2026-10-28 要求「被@时看@你的对象发送的最近三张图片」）。
+  // 触发回话时：把对方最近发的图 / 表情包也一并看了（用户 2026-10-29 要求
+  // 「触发回话后自动看最近的回话对象发的表情和图片」）。
   // 常见场景是对方先甩几张图、再 @ 一句「你看这个」——那时候正文里只有这句话，图全在上一两条里。
-  const hint = await callerRecentImagesHint(meta, currentFiles);
+  const hint = await callerRecentImagesHint(meta, currentFiles, turnStart);
   if (hint) out = `${hint}\n${out}`;
+  // 这一轮已经在正文里看过的图，下一轮别再当「最近发的」重复提示（免得她对着同一张图反复反应）
+  markHinted(meta.chatKey, seenFiles.map((f) => `f:${f}`));
 
   // 超出上限的图：统一降级
   for (let i = MAX_IMAGES_PER_MSG; i < images.length; i++) {
@@ -4741,6 +4795,8 @@ function statusPayload() {
     self: state.self,
     busy: sessions.size ? [...sessions.values()].filter((s) => s.busy).length : 0,
     maxConcurrent: cfg.raw.agent.maxConcurrent,
+    criticalExtra: sem.extra,
+    criticalWaiting: sem.critQueue.length,
     stats: state.stats,
     chats: [...sessions.values()].map((s) => ({ key: s.key, pending: s.buffer.length, busy: s.busy })),
     balance: {
@@ -4941,7 +4997,11 @@ const control = startControl(cfg, {
   initCharacter(cfg);
     history = new HistoryStore(cfg.dataDir, cfg.raw.context);
     runner = new AgentRunner(cfg);
-    sem = new Semaphore(cfg.raw.agent.maxConcurrent);
+    sem = new Semaphore(cfg.raw.agent.maxConcurrent, {
+      extra: cfg.raw.agent.criticalExtra,
+      waitMs: cfg.raw.agent.criticalWaitMs,
+      onWarn: (msg) => note('warn', msg),
+    });
     guard = guardFor(cfg);
     note('info', `配置已重载：私聊白名单 ${cfg.privateAllow.size} 人，群 ${cfg.groupAllow.size} 个，可信 ${cfg.trusted.size} 人`);
     if (JSON.stringify(old.raw.napcat) !== JSON.stringify(cfg.raw.napcat)) {

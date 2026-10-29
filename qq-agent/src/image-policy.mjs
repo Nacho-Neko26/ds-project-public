@@ -53,7 +53,9 @@ export function createRecentImageRing(max = 60) {
   const cap = Math.max(1, Number(max) || 60);
   return {
     remember(chatKey, entry) {
-      if (!chatKey || !entry || !entry.file) return;
+      // 表情包（mface）常常只有一句文字摘要、没有能下载的图，那种也记一笔：
+      // 回头「补看」时用那句摘要顶上，不花钱。
+      if (!chatKey || !entry || (!entry.file && !entry.summary)) return;
       const list = byChat.get(chatKey) || [];
       list.push(entry);
       while (list.length > cap) list.shift();
@@ -76,12 +78,28 @@ export function createRecentImageRing(max = 60) {
   };
 }
 
-/** 被 @ 时补看的那段提示（纯文本，便于单测） */
-export function buildRecentImagesHint(name, texts) {
+/**
+ * 这轮要不要「补看对方最近发的图/表情」（2026-10-29 用户要求）。
+ *
+ * 用户原话：「触发回话后自动看最近的回话对象发的表情和图片」
+ * 所以判据只看一件事——这一轮是不是真的在回某个人的话：
+ * 私聊永远算；群里只有被 @ 或被叫到名字才算（没被叫就还是不看，图照样入库）。
+ */
+export function shouldLookRecent(policy, meta) {
+  const m = meta || {};
+  if (!m.isGroup) return true;
+  const p = policy || DEFAULT_POLICY;
+  if (!p.groupOnlyWhenAt) return true;
+  return !!m.atMe;
+}
+
+/** 补看对方最近几张图时给的提示（纯文本，便于单测） */
+export function buildRecentImagesHint(name, texts, { isGroup = true } = {}) {
   const who = String(name || '对方');
   const seen = (texts || []).filter(Boolean);
   if (!seen.length) return '';
-  return `[叫你的这个人 ${who} 刚在群里还发了 ${seen.length} 张图，你眼里看到的是：`
+  const where = isGroup ? '刚在群里还' : '刚才还';
+  return `[${isGroup ? '叫你的这个人 ' : ''}${who} ${where}发了 ${seen.length} 张图/表情，你眼里看到的是：`
     + seen.map((t, i) => `（${i + 1}）${t}`).join('')
     + '（这是我看到的，别复述这段话，直接说你自己对它的反应）]';
 }

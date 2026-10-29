@@ -104,6 +104,8 @@ const DEFAULTS = {
   },
   agent: {
     profile: 'headless', taskTimeoutMs: 180000, maxConcurrent: 2,
+    // 文本回复（emergency 通道）最多能超额几个；到顶先等 criticalWaitMs，等不到才硬放行
+    criticalExtra: 1, criticalWaitMs: 45000,
     cwd: 'workspace', telemetry: 'off', jsonEvents: true,
     // 别人从 QQ 发来的文件放哪：相对 agent.cwd 的一个独立文件夹。
     // 2026-10-28 用户要求单独建目录，别再和图片一起塞进 incoming/。

@@ -6,7 +6,7 @@
  * 验的是「群里到底看不看图」这件事的判断，以及被 @ 时那三张怎么捞。
  */
 import {
-  DEFAULT_POLICY, resolvePolicy, shouldReadImages, createRecentImageRing,
+  DEFAULT_POLICY, resolvePolicy, shouldReadImages, shouldLookRecent, createRecentImageRing,
   buildRecentImagesHint, blindPlaceholder,
 } from '../src/image-policy.mjs';
 
@@ -78,7 +78,31 @@ function eq(a, b, label) {
   eq(ring.size('group:1'), 4, '没有文件路径/没有窗口的条目不记');
 }
 
-/* ---------- 4. 文案 ---------- */
+/* ---------- 3.5 表情包只有摘要也记（2026-10-29 用户要求「表情和图片」都看） ---------- */
+{
+  const ring = createRecentImageRing(10);
+  const t0 = 2_000_000;
+  ring.remember('group:2', { uid: 9, name: '祈羽', summary: '[表情:爱心]', at: t0 });
+  ring.remember('group:2', { uid: 9, name: '祈羽', file: '/p.jpg', at: t0 + 5 });
+  eq(ring.size('group:2'), 2, '只有摘要的表情包也进环');
+  eq(ring.from('group:2', 9, 5, 0).length, 2, '捞得到摘要条目和图片条目');
+  eq(ring.from('group:2', 9, 1, 0)[0].file, '/p.jpg', '取最近一张是后到的图');
+  ring.remember('group:2', { uid: 9, name: '祈羽', summary: '', at: t0 + 9 });
+  eq(ring.size('group:2'), 2, '摘要为空也不记');
+}
+
+/* ---------- 4. 什么时候补看（触发回话才算） ---------- */
+{
+  const p = DEFAULT_POLICY;
+  eq(shouldLookRecent(p, { isGroup: false, atMe: false }), true, '私聊：触发回话就补看');
+  eq(shouldLookRecent(p, { isGroup: true, atMe: true }), true, '群里被 @：补看');
+  eq(shouldLookRecent(p, { isGroup: true, atMe: false }), false, '群里没被叫：不补看');
+  eq(shouldLookRecent(p, {}), true, '缺字段当私聊');
+  eq(shouldLookRecent({ ...p, groupOnlyWhenAt: false }, { isGroup: true, atMe: false }), true, '策略关掉后群里也补看');
+  eq(shouldLookRecent(null, { isGroup: true, atMe: true }), true, 'policy 为空也用默认');
+}
+
+/* ---------- 5. 文案 ---------- */
 {
   const hint = buildRecentImagesHint('祈羽', ['一只橘猫', '一张截图']);
   ok(hint.includes('祈羽'), '被 @ 提示里带上是谁');
@@ -87,6 +111,10 @@ function eq(a, b, label) {
   ok(hint.includes('别复述这段话'), '提示里带了「别复述」的护栏');
   eq(buildRecentImagesHint('祈羽', []), '', '没有图就不产生提示');
   eq(buildRecentImagesHint('祈羽', [null, '']), '', '空描述不算数');
+
+  const priv = buildRecentImagesHint('祈羽', ['一只橘猫'], { isGroup: false });
+  ok(priv.includes('刚才还发了'), '私聊措辞不说「群里」');
+  ok(!priv.includes('叫你的这个人'), '私聊措辞不带「叫你的这个人」');
 
   eq(blindPlaceholder('祈羽', false), '[祈羽发了一张图，群里刷的，没细看]', '群图不看时的占位符');
   eq(blindPlaceholder('祈羽', true), '[祈羽发了个表情包，群里刷的，没细看]', '表情包占位符');
