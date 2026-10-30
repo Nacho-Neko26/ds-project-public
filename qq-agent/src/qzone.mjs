@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readJsonl, hhmm, safeFileName } from './util.mjs';
 import { defaultNick } from './character.mjs';
+import { guardFor } from './resource-guard.mjs';
 
 /**
  * 每天一条 QQ 空间说说。

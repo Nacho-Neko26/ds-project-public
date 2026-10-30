@@ -305,8 +305,11 @@ export function detectLocal({ health, now = Date.now() } = {}) {
     const mins = Number.isFinite(age) ? Math.round(age / 60_000) : '?';
     findings.push({
       id: 'local-stale',
-      level: 'warn',
-      text: `本机执行器 ${mins} 分钟没上报了（可能挂了，也可能网络断了）`,
+      // 2026-10-30 用户要求「服务器老是弹出看守警告，可以关了」：
+      // 本机执行器断了不影响服务器上的文本回复，不该每 3 分钟弹一次、每十几分钟私聊报人。
+      // 降成 info 只进日志；真有排队任务要它干活时，有别的判据（local-task-* / local-repeat）会报。
+      level: 'info',
+      text: `本机执行器 ${mins} 分钟没上报了（不影响服务器回复，可能只是本机没开）`,
     });
   }
   const cur = health.current;
@@ -534,14 +537,28 @@ async function main() {
     const quiet = inQuietHours(new Date(now));
     const critical = warnOrWorse.some((f) => f.level === 'critical');
     const gapOk = !state.lastNotifyAt || now - Number(state.lastNotifyAt) > LIMITS.notifyGapMs;
-    if ((!quiet || critical) && gapOk && !DRY) {
+    // 2026-10-30：同一类问题老是不解决时，别每 10 分钟私聊一遍。
+    // 同一 id 一小时内只报一次人（critical 除外，它每次都该喊）。恢复后再出同一个问题会重新报。
+    const reported = state.reportedIds && typeof state.reportedIds === 'object' ? state.reportedIds : {};
+    const DEDUPE_MS = 60 * 60_000;
+    const freshWarn = warnOrWorse.filter((f) => {
+      if (f.level === 'critical') return true;
+      const last = Number(reported[f.id] ?? 0);
+      return !last || now - last > DEDUPE_MS;
+    });
+    if (freshWarn.length && (!quiet || critical) && gapOk && !DRY) {
       const head = actions.length ? `看守动手了（${actions.join('、')}），先说一声。` : '看守看了一眼，有点不对劲。';
-      const body = warnOrWorse.map((f) => `· ${f.text}`).join('\n');
+      const body = freshWarn.map((f) => `· ${f.text}`).join('\n');
       if (await notifyOwner(`${head}\n${body}`)) {
         state.lastNotifyAt = now;
         notified = true;
+        for (const f of freshWarn) if (f.level !== 'critical') reported[f.id] = now;
+        state.reportedIds = reported;
       }
     }
+  } else {
+    // 一切正常：清掉去重记录，下次同一个问题还能重新报人
+    state.reportedIds = {};
   }
 
   // —— 落状态 ——

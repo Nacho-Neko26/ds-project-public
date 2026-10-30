@@ -21,6 +21,34 @@ const STRONG = [
   /甩一张|配一张|来一张吧/,
   /素材(?:当|就)没看见/,
   /应该分两次|分两次(?:发送|发)|分两条(?:发送|发)|不该这样发|这种格式不对/,
+  // 写作指令式的祈使句：正常聊天不会对着自己说「别抄语料」
+  /别抄(?:语料|原句|原文)?|别复读|别照搬|别照抄/,
+  /不要自称|别自称/,
+];
+
+/* 2026-10-30 复苏：模型把「角色分析 + 自写台词」整段吐进正文。
+ * 事故原文（群 200000001 09:43）：
+ *   沐·枫逸萧喊我「安全委员溟月姐」，还甩了两个呲牙——这是逗我，带着你只管吓人。我是安全委员，得顺着应一声，语气轻松，带点小傲娇。
+ *   「安全委员溟月姐……行吧，这头衔我认了」——再补一句：有事我真管。发个黄脸呲牙也行。
+ *   要短，一两条。别抄语料。别复读「吓什么呀」这上一句。注意这人叫沐·枫逸萧（阿枫）。不要自称本鲸（刚用过可考虑）。可以用「本喵」？这一场里还没用，用一次也行，不过也可以不用。
+ *   「溟月姐」——群里被喊姐，我的记忆里有一条「被人喊姐我就认下，还顺着论辈分往下压」——那就顺着压一下。
+ *   回复：安全委员上
+ * 老词表（回一句就好 / 简短点回 / 默认不发）一句都没中：这种思考腔是「角色分析 + 写作指令」，
+ * 不是「决定发不发」。所以再补一组「跟自己商量的规划」；单条不算，凑两条才算，免得误杀正文。 */
+const PLAN = [
+  /要短|短一点|简短点/,
+  /一两条|两条差不多/,
+  /别抄|别复读|别照搬|别照抄/,
+  /注意这人|注意他叫|不要自称|别自称|可以用「|用一次也行|不过也可以不用/,
+  /再补一句|补一句[:：]|回复[:：]/,
+  /发个(?:黄脸|表情|呲牙|贴图)/,
+  /语气(?:轻松|温柔|俏皮|随意|平静)|带点(?:小)?(?:傲娇|调皮|温柔|俏皮)/,
+];
+const SELF = [
+  /(?:这|那)是逗我|在逗我|逗我玩/,
+  /得顺着|顺着应一声|那就顺着/,
+  /我记忆里|记忆里有一条/,
+  /这一场|这一轮|上一句|上一条/,
 ];
 
 const WEAK = [
@@ -42,6 +70,11 @@ function looksLikeSelfTalk(seg) {
   if (!t || t.length > MAX_SEG_LEN) return false;
   if (isDirectiveLine(t)) return false;
   if (STRONG.some((re) => re.test(t))) return true;
+  // 规划/自述：两类加起来 ≥2 条才算（「要短」单说一句可能是正文，配上「别抄语料」就是写给自己看的）
+  let plan = 0;
+  for (const re of PLAN) if (re.test(t)) plan += 1;
+  for (const re of SELF) if (re.test(t)) plan += 1;
+  if (plan >= 2) return true;
   let weak = 0;
   for (const re of WEAK) if (re.test(t)) weak += 1;
   return weak >= 2;
@@ -130,6 +163,17 @@ export function stripThinkingLeak(text) {
   const nonEmpty = lines.filter((l) => l.trim());
   // 只有一段时不动：思考与正文黏在同一段里，切开的风险大于收益
   if (nonEmpty.length < 2) return raw;
+
+  // 2026-10-30：模型自己标了正文（「回复：xxx」）时，前面那些分析一律不要，只留它标出来的那句。
+  // 这是最可靠的信号——它写的「回复：」就是它认定该发出去的内容。
+  const replyLines = lines
+    .map((l) => l.match(/^\s*(?:回复|回答|答)[：:]\s*(.+)$/))
+    .filter(Boolean);
+  if (replyLines.length) {
+    const body = replyLines[replyLines.length - 1][1].trim();
+    const dirs = lines.filter((l) => isDirectiveLine(l)).map((l) => l.trim());
+    if (body) return [...dirs, body].join('\n');
+  }
 
   const kept = [];
   for (const line of lines) {
