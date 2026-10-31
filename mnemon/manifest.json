@@ -1,0 +1,47 @@
+{
+  "format": "mnemonpack",
+  "version": 1,
+  "scope": "full",
+  "exportedAt": "2026-10-31T18:30:58.603Z",
+  "source": {
+    "plugin": "dsh-mnemon",
+    "pluginVersion": "0.5.37"
+  },
+  "components": [
+    "runtime",
+    "documents",
+    "memory-spaces"
+  ],
+  "summary": [
+    {
+      "component": "runtime",
+      "files": 3,
+      "bytes": 36,
+      "items": 0
+    },
+    {
+      "component": "documents",
+      "files": 1,
+      "bytes": 38,
+      "items": 0
+    },
+    {
+      "component": "memory-spaces",
+      "files": 1,
+      "bytes": 35,
+      "items": 0
+    }
+  ],
+  "sync": {
+    "channel": "git",
+    "branch": "mnemon-sync",
+    "subdir": "mnemon/",
+    "pushedAt": "2026-10-31T18:30:58.603Z",
+    "machine": {
+      "id": "16a49fff-369f-4428-b613-98433e99a06b",
+      "label": "Nacho的拯救者",
+      "createdAt": "2026-10-31T18:28:29.112Z"
+    },
+    "tombstones": []
+  }
+}
